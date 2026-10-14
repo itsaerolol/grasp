@@ -75,11 +75,11 @@ final class SendEngine: ObservableObject {
         try? FileManager.default.removeItem(at: workDir)
     }
 
-    private struct FileRef { let id: String; let url: URL; let size: Int64 }
+    struct FileRef { let id: String; let url: URL; let size: Int64 }
 
     /// A single text item becomes a LocalSend "message" (text/plain + preview, no upload).
     /// Text mixed with files is sent as a .txt file.
-    private func describe(_ items: [OutgoingItem]) throws -> ([LSFileDTO], [FileRef]) {
+    func describe(_ items: [OutgoingItem]) throws -> ([LSFileDTO], [FileRef]) {
         if items.count == 1, case .text(let s) = items[0] {
             let data = Data(s.utf8)
             return ([LSFileDTO(id: UUID().uuidString, fileName: "\(UUID().uuidString).txt",

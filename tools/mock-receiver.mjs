@@ -5,7 +5,7 @@
 //  - /register: claimed fingerprint must equal presented client cert fingerprint
 //  - single session slot (409), upload must come from the same IP + valid token (403), sha256 check (422)
 //  - single text/plain file with preview = message -> 204 after accept, no upload
-// Usage: node tools/mock-receiver.mjs [--auto-accept|--reject] [--pin 1234] [--port 53317] [--inbox ./mock-inbox]
+// Usage: node tools/mock-receiver.mjs [--auto-accept|--reject] [--pin 1234] [--port 53317] [--inbox ./mock-inbox] [--throttle-kbps 500]
 import https from 'node:https';
 import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream, mkdirSync, renameSync, unlinkSync } from 'node:fs';
@@ -22,6 +22,7 @@ const inbox = opt('--inbox', './mock-inbox');
 const pin = opt('--pin', null);
 const mode = flag('--auto-accept') ? 'accept' : flag('--reject') ? 'reject' : 'ask';
 const mandatoryClientCert = !flag('--optional-client-cert');
+const throttleKbps = Number(opt('--throttle-kbps', 0)); // slow uploads so Cancel / memory can be exercised
 mkdirSync(inbox, { recursive: true });
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -73,12 +74,17 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
           const files = Object.values(body.files || {});
           if (!files.length) return json(res, 400, { message: 'No files provided' });
           if (session) return json(res, 409, { message: 'Blocked by another session' });
-          session = { id: randomUUID(), ip, files: {} };
+          session = { id: randomUUID(), ip, files: {}, active: false };
           const isMessage = files.length === 1 && files[0].fileType === 'text/plain' && files[0].preview != null;
           log(isMessage ? `MESSAGE from ${body.info.alias} (client-cert fingerprint ${clientFp}): "${files[0].preview}"`
             : `prepare-upload from ${body.info.alias} (${clientFp?.slice(0, 8)}…): ${files.map((f) => `${f.fileName} ${f.size}B ${f.fileType}`).join(', ')}`);
+          // Like the Rust receiver's PendingGuard: a sender that disconnects mid-prompt frees the slot.
+          const mine = session; let gone = false;
+          req.socket.once('close', () => { gone = true; if (session === mine && !mine.active) { log('sender disconnected before answer'); session = null; } });
           let accepted = mode === 'accept' ? true : mode === 'reject' ? false : await ask('Accept? [y/N] ');
+          if (gone || session !== mine) return;
           if (!accepted) { session = null; return json(res, 403, { message: 'Rejected' }); }
+          mine.active = true;
           if (isMessage) { session = null; return json(res, 204); }
           const tokens = {};
           for (const f of files) { const t = randomUUID(); session.files[f.id] = { dto: f, token: t, done: false }; tokens[f.id] = t; }
@@ -92,8 +98,12 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
             return json(res, 403, { message: 'Invalid token or IP address' });
           const tmp = join(inbox, `.${q.fileId}.part`), out = join(inbox, basename(f.dto.fileName));
           const hash = createHash('sha256'); let bytes = 0;
-          const ws = createWriteStream(tmp);
-          req.on('data', (c) => { hash.update(c); bytes += c.length; });
+          const ws = createWriteStream(tmp); ws.on('error', () => {});
+          req.on('data', (c) => {
+            hash.update(c); bytes += c.length;
+            if (throttleKbps) { req.pause(); setTimeout(() => req.resume(), (c.length / 1024 / throttleKbps) * 1000); }
+          });
+          req.socket.once('close', () => { if (!req.complete) { ws.destroy(); try { unlinkSync(tmp); } catch {} log('upload aborted by sender', f.dto.fileName); } });
           req.pipe(ws);
           ws.on('finish', () => {
             const actual = hash.digest('hex');

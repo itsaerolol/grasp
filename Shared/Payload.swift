@@ -62,11 +62,17 @@ enum PayloadBuilder {
                 let name = suggestedName.map { name -> String in
                     (name as NSString).pathExtension.isEmpty ? name + "." + tmp.pathExtension : name
                 } ?? tmp.lastPathComponent
-                let dest = uniqueURL(in: workDir, name: name)
+                let dest = uniqueURL(in: workDir, name: normalizedName(name))
                 do { try FileManager.default.copyItem(at: tmp, to: dest); cont.resume(returning: dest) }
                 catch { cont.resume(throwing: error) }
             }
         }
+    }
+
+    /// Photos hands over JPEG transcodes named ".jpeg"; everything else we produce says ".jpg".
+    static func normalizedName(_ name: String) -> String {
+        let ns = name as NSString
+        return ns.pathExtension.lowercased() == "jpeg" ? ns.deletingPathExtension + ".jpg" : name
     }
 
     /// HEIC/HEIF -> JPEG via ImageIO, preserving orientation + EXIF. Decision: always convert for Windows.

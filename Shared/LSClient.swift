@@ -49,6 +49,10 @@ final class LSClient: @unchecked Sendable {
     }
 
     private func mapTransport(_ error: Error) -> Error {
+        // When the server asked for a client cert (stock LocalSend, the mock), CFNetwork reports its
+        // HTTP 403 (declined / unanswered prompt) as -1206 instead of delivering the response.
+        // A real client-cert TLS failure surfaces as a secure-connection error, not this one.
+        if let e = error as? URLError, e.code == .clientCertificateRequired { return LSError.rejected }
         if error is URLError, let expected = expectedFingerprint,
            let seen = serverFingerprint, seen != expected {
             return LSError.fingerprintMismatch(expected: expected, got: seen)

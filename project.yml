@@ -91,3 +91,19 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.itsaerolol.grasp
+
+  GraspTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+      - Shared
+    dependencies:
+      - package: swift-certificates
+        product: X509
+      - package: swift-crypto
+        product: _CryptoExtras
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.itsaerolol.grasp.tests
+        GENERATE_INFOPLIST_FILE: YES
