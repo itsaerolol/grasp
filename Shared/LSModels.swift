@@ -57,7 +57,7 @@ enum LSError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unreachable(let host): return "Can't reach PC at \(host). Is LocalSend open and on the same Wi-Fi?"
+        case .unreachable(let host): return "Can't reach \(host). Is Grasp running on the PC, on the same Wi-Fi?"
         case .fingerprintMismatch: return "PC identity changed. Re-pair in the Grasp app."
         case .pinRequired: return "PC requires a PIN. Turn off PIN in LocalSend or set it in Grasp."
         case .rejected: return "Declined on the PC."

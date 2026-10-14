@@ -22,13 +22,14 @@ final class PairingModel: ObservableObject {
         scanning = true; status = nil
         found = await Discovery.scan(me: me).sorted { $0.info.alias < $1.info.alias }
         scanning = false
-        if found.isEmpty { status = "No PCs found. Open LocalSend on the PC, same Wi-Fi, and allow Local Network access." }
+        if found.isEmpty { status = "No PCs found. Open Grasp on the PC, same Wi-Fi, and allow Local Network access, or enter its IP below." }
     }
 
     func addManual() async {
-        guard let me, !manualHost.isEmpty else { return }
-        if let hit = await Discovery.probe(host: manualHost, me: me, timeout: 3) { pair(hit) }
-        else { status = "Nothing answering LocalSend at \(manualHost):\(LS.port)." }
+        let host = manualHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let me, !host.isEmpty else { return }
+        if let hit = await Discovery.probe(host: host, me: me, timeout: 3) { pair(hit) }
+        else { status = "Nothing answering at \(host):\(LS.port). Is Grasp running on the PC?" }
     }
 
     func pair(_ f: Discovery.Found) {
@@ -37,13 +38,14 @@ final class PairingModel: ObservableObject {
         PeerStore.save(peer, makeDefault: true)
         ShareDonation.donate(peer)
         paired = peer
-        status = "Paired. Check that LocalSend on the PC shows fingerprint ending \(f.certFingerprint.suffix(8))."
+        status = "Paired with \(f.info.alias)."
     }
 
     func unpair() {
         if let p = paired { PeerStore.remove(p) }
         ShareDonation.deleteAll()
         paired = nil
+        status = nil
     }
 
     func sendTest() async {
@@ -87,7 +89,7 @@ struct PairingView: View {
                         }
                     }
                 } header: { Text("Find PC") } footer: {
-                    Text("PC needs LocalSend open with encryption on. Grasp sends from the share sheet.")
+                    Text("The PC needs Grasp (or LocalSend with encryption on) running. Send from the share sheet.")
                 }
                 Section("Manual IP") {
                     HStack {

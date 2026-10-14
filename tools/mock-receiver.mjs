@@ -61,7 +61,7 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
         case `POST ${API}/register`: {
           const body = await readJson(req);
           if (clientFp && body.fingerprint?.toUpperCase() !== clientFp) log('WARN register fingerprint != client cert, ignored');
-          else log('register from', body.alias, ip);
+          else log(`register from ${body.alias} ${ip} client-cert fingerprint ${clientFp ?? 'none'}`);
           return json(res, 200, info);
         }
         case `GET ${API}/info`:
@@ -75,7 +75,7 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
           if (session) return json(res, 409, { message: 'Blocked by another session' });
           session = { id: randomUUID(), ip, files: {} };
           const isMessage = files.length === 1 && files[0].fileType === 'text/plain' && files[0].preview != null;
-          log(isMessage ? `MESSAGE from ${body.info.alias}: "${files[0].preview}"`
+          log(isMessage ? `MESSAGE from ${body.info.alias} (client-cert fingerprint ${clientFp}): "${files[0].preview}"`
             : `prepare-upload from ${body.info.alias} (${clientFp?.slice(0, 8)}…): ${files.map((f) => `${f.fileName} ${f.size}B ${f.fileType}`).join(', ')}`);
           let accepted = mode === 'accept' ? true : mode === 'reject' ? false : await ask('Accept? [y/N] ');
           if (!accepted) { session = null; return json(res, 403, { message: 'Rejected' }); }
