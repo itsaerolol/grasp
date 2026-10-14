@@ -65,6 +65,17 @@ impl Ui for TauriUi {
             let _ = self.app.emit("accepted-message", serde_json::json!({ "id": id, "copied": copied, "opened": opened }));
             return;
         }
+        match &ev {
+            // Show what arrived: Explorer opens on the folder with the (first) file selected. The file
+            // itself is never opened, so a received document or program can't run on its own.
+            UiEvent::Done { dir, first_file, .. } => {
+                open_in_explorer(PathBuf::from(first_file.clone().unwrap_or_else(|| dir.clone())));
+            }
+            UiEvent::Paired { .. } => {
+                let _ = self.app.emit_to("menu", "menu-refresh", ());
+            }
+            _ => {}
+        }
         let _ = self.app.emit("ui", &ev);
     }
 }
@@ -165,6 +176,15 @@ pub fn open_in_explorer(path: PathBuf) {
     if path.is_dir() {
         cmd.arg(path);
     } else {
+        // Explorer wants `/select,"C:\path with spaces\file"` as one raw argument; the default argv
+        // quoting would wrap the whole thing and Explorer would open Documents instead. Names are
+        // ours (safe_file_name strips `"`), so building the string is safe.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+        }
+        #[cfg(not(windows))]
         cmd.arg(format!("/select,{}", path.display()));
     }
     let _ = cmd.spawn();

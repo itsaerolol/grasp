@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grasp</title>
+<style>
+  /* Same always-dark tokens as the toast (index.html), laid out like an iOS grouped list. */
+  :root {
+    color-scheme: dark;
+    --card: rgba(38, 38, 40, 0.98);
+    --group: rgba(255, 255, 255, 0.06);
+    --sep: rgba(255, 255, 255, 0.08);
+    --border: rgba(255, 255, 255, 0.1);
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --text-3: #6e6e73;
+    --fill: rgba(235, 235, 245, 0.16);
+    --hover: rgba(255, 255, 255, 0.06);
+    --accent: #0a84ff;
+    --ok: #30d158;
+    --bad: #ff6a61;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: transparent; overflow: hidden; }
+  body {
+    font: 13.5px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    color: var(--text); -webkit-user-select: none; user-select: none; cursor: default;
+  }
+  /* Transparent margin holds the shadow (see the toast for why it must fit). */
+  .stage { padding: 10px; }
+  .card {
+    width: 320px; padding: 14px 12px 12px; border-radius: 18px;
+    background: var(--card); border: 1px solid var(--border);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+
+  .head { display: flex; align-items: center; gap: 10px; padding: 0 4px 12px; }
+  .head svg { width: 34px; height: 34px; flex: none; }
+  .head .text { flex: 1; min-width: 0; }
+  .title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .sub { font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mono { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; font-size: 11.5px; }
+
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px;
+    background: var(--fill); font-size: 11.5px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; }
+
+  h2 { font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; padding: 10px 8px 6px; }
+  .group { background: var(--group); border-radius: 12px; overflow: hidden; }
+  .item { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 12px; position: relative; }
+  .item + .item::before { content: ""; position: absolute; top: 0; left: 12px; right: 0; height: 1px; background: var(--sep); }
+  .item.btn { cursor: pointer; }
+  .item.btn:hover { background: var(--hover); }
+  .item.btn:active { background: var(--fill); }
+  .item .label { flex: 1; min-width: 0; }
+  .item .value { color: var(--text-2); max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item.accent .label { color: var(--accent); font-weight: 600; }
+  .item.danger .label { color: var(--bad); }
+  .item.disabled { opacity: .45; pointer-events: none; }
+  .chev { color: var(--text-3); font-size: 15px; }
+  .glyph { width: 28px; height: 28px; border-radius: 7px; background: var(--fill); display: grid; place-items: center; flex: none; }
+  .glyph svg { width: 16px; height: 16px; }
+
+  .x { width: 22px; height: 22px; border: 0; border-radius: 50%; background: var(--fill); color: var(--text-2);
+    font-size: 13px; line-height: 22px; cursor: pointer; opacity: 0; transition: opacity 120ms; }
+  .item:hover .x, .x:focus-visible { opacity: 1; }
+  .x:hover { background: var(--bad); color: #fff; }
+
+  /* iOS-style switch. Green = on, the data. */
+  .switch { position: relative; width: 40px; height: 24px; flex: none; }
+  .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+  .switch i { position: absolute; inset: 0; border-radius: 12px; background: var(--fill); transition: background 160ms; pointer-events: none; }
+  .switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform 180ms cubic-bezier(.3,.7,.4,1); }
+  .switch input:checked + i { background: var(--ok); }
+  .switch input:checked + i::after { transform: translateX(16px); }
+  .switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .code { display: flex; justify-content: center; gap: 10px; padding: 16px 12px 10px; }
+  .code span { width: 56px; height: 68px; border-radius: 12px; background: var(--fill); display: grid; place-items: center;
+    font-size: 36px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .code-meta { display: flex; justify-content: space-between; align-items: center; padding: 0 12px 12px; }
+  .link { border: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; padding: 4px 2px; }
+  .link:hover { text-decoration: underline; }
+
+  .warn { color: var(--bad); }
+  @media (prefers-reduced-motion: reduce) { .switch i, .switch i::after, .x { transition: none; } }
+</style>
+</head>
+<body>
+<div class="stage"><div class="card" id="card" role="menu" aria-label="Grasp"></div></div>
+<script>
+'use strict';
+const { listen } = window.__TAURI__.event;
+const { invoke } = window.__TAURI__.core;
+const card = document.getElementById('card');
+
+const APP_ICON = `<svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3aa8ff"/><stop offset="1" stop-color="#0a5cff"/></linearGradient></defs><rect x="3" y="3" width="94" height="94" rx="22" fill="url(#g)"/><rect x="46" y="22" width="8" height="30" rx="3" fill="#fff"/><polygon points="33,48 67,48 50,68" fill="#fff" stroke="#fff" stroke-width="4" stroke-linejoin="round"/><path d="M30 64v13h40V64" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const PHONE = `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="1.5" width="8" height="13" rx="2" fill="none" stroke="#f5f5f7" stroke-width="1.4"/><rect x="6.5" y="12" width="3" height="1" rx=".5" fill="#f5f5f7"/></svg>`;
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const shortId = (fp) => `${fp.slice(0, 4)}…${fp.slice(-4)}`;
+const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+let state = null;
+let tick = null;
+
+async function refresh() {
+  state = await invoke('menu_state');
+  render();
+}
+
+function render() {
+  const s = state;
+  const paired = s.paired;
+  const status = s.receiving
+    ? `<span class="chip"><span class="dot" style="background:var(--ok)"></span>Receiving</span>`
+    : `<span class="chip"><span class="dot" style="background:var(--bad)"></span>Off</span>`;
+
+  let iphone;
+  if (s.pairing) {
+    iphone = `<div class="group" aria-label="Pairing code">
+        <div class="code" aria-live="polite">${[...s.pairing.code].map((d) => `<span>${d}</span>`).join('')}</div>
+        <div class="code-meta"><span class="chip" id="left" title="Code expires">${mmss(s.pairing.secondsLeft)}</span>
+          <button class="link" id="cancel-pair">Cancel</button></div></div>`;
+  } else {
+    const rows = paired.map((d) => `
+      <div class="item" title="ID ${esc(d.fingerprint)}">
+        <span class="glyph">${PHONE}</span>
+        <span class="label">${esc(d.alias)}<div class="sub mono">${shortId(d.fingerprint)}</div></span>
+        <button class="x" data-unpair="${esc(d.fingerprint)}" title="Unpair" aria-label="Unpair ${esc(d.alias)}">✕</button>
+      </div>`).join('');
+    iphone = `<div class="group">${rows}
+      <div class="item btn accent ${s.receiving ? '' : 'disabled'}" id="pair" role="menuitem" tabindex="0">
+        <span class="label">${paired.length ? 'Pair another iPhone' : 'Pair iPhone'}</span></div></div>`;
+  }
+
+  card.innerHTML = `
+    <div class="head">${APP_ICON}<div class="text"><div class="title">${esc(s.alias)}</div>
+      <div class="sub" title="Port ${s.port}">${esc(s.address ?? 'No network')}</div></div>${status}</div>
+    ${s.serverError ? `<div class="group"><div class="item warn"><span class="label">${esc(s.serverError)}</span></div></div>` : ''}
+    <h2>iPhone</h2>${iphone}
+    <h2>Receiving</h2>
+    <div class="group">
+      <label class="item ${paired.length ? '' : 'disabled'}">
+        <span class="label">Auto-accept from paired iPhone</span>
+        <span class="switch"><input type="checkbox" id="auto" ${s.autoAccept ? 'checked' : ''} ${paired.length ? '' : 'disabled'} aria-label="Auto-accept from paired iPhone"><i></i></span>
+      </label>
+      <div class="item btn" id="save" role="menuitem" tabindex="0" title="${esc(s.saveDir)}">
+        <span class="label">Save to</span><span class="value">${esc(s.saveDirName)}</span><span class="chev">›</span></div>
+      <div class="item btn" id="open" role="menuitem" tabindex="0"><span class="label">Open folder</span></div>
+    </div>
+    <h2></h2>
+    <div class="group">
+      <label class="item"><span class="label">Launch at login</span>
+        <span class="switch"><input type="checkbox" id="login" ${s.launchAtLogin ? 'checked' : ''} aria-label="Launch at login"><i></i></span></label>
+      <div class="item btn danger" id="quit" role="menuitem" tabindex="0"><span class="label">Quit Grasp</span></div>
+    </div>`;
+  wire();
+  invoke('menu_resize', { height: document.querySelector('.stage').offsetHeight });
+
+  clearInterval(tick);
+  if (s.pairing) {
+    let left = s.pairing.secondsLeft;
+    tick = setInterval(() => {
+      left -= 1;
+      const el = document.getElementById('left');
+      if (left <= 0) { clearInterval(tick); refresh(); } else if (el) el.textContent = mmss(left);
+    }, 1000);
+  }
+}
+
+function wire() {
+  const on = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.onclick = fn;
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); } };
+  };
+  on('pair', async () => { await invoke('start_pairing'); refresh(); });
+  on('cancel-pair', async () => { await invoke('cancel_pairing'); refresh(); });
+  on('save', async () => { await invoke('choose_save_dir'); refresh(); });
+  on('open', () => invoke('open_save_dir'));
+  on('quit', () => invoke('quit'));
+  const auto = document.getElementById('auto');
+  if (auto) auto.onchange = async () => { await invoke('set_auto_accept', { on: auto.checked }); refresh(); };
+  const login = document.getElementById('login');
+  if (login) login.onchange = async () => { await invoke('set_launch_at_login', { on: login.checked }); refresh(); };
+  card.querySelectorAll('[data-unpair]').forEach((b) => {
+    b.onclick = async (e) => { e.stopPropagation(); await invoke('unpair', { fingerprint: b.dataset.unpair }); refresh(); };
+  });
+}
+
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') invoke('menu_hide'); });
+listen('menu-open', refresh);
+listen('menu-refresh', refresh);
+refresh();
+</script>
+</body>
+</html>

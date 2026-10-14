@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The toast window listens for receiver events and calls our own commands.",
-  "windows": ["toast"],
-  "permissions": ["core:default"]
+  "description": "The toast and menu windows listen for receiver events and call our own commands.",
+  "windows": [
+    "toast",
+    "menu"
+  ],
+  "permissions": [
+    "core:default"
+  ]
 }

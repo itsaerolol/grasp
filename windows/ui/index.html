@@ -162,6 +162,9 @@ function markup() {
     case 'done':
       return `<div class="row"><div class="glyph">${CHECK}</div><div class="text">
           <div class="title">Received</div><div class="sub">${esc(c.summary)}</div></div></div>`;
+    case 'paired':
+      return `<div class="row"><div class="glyph">${CHECK}</div><div class="text">
+          <div class="title">Paired</div><div class="sub">${esc(c.name)}</div></div></div>`;
     case 'copied':
       return `<div class="row"><div class="glyph">${CHECK}</div><div class="text">
           <div class="title">${c.copied ? 'Copied' : 'Couldn’t copy'}${c.opened ? ' · Opened in browser' : ''}</div></div></div>
@@ -210,6 +213,7 @@ async function present(item) {
   requestAnimationFrame(() => requestAnimationFrame(() => card.classList.add('in')));
   card.onmouseenter = card.onmouseleave = null;
   if (item.kind === 'failed') autoDismiss(6000);
+  if (item.kind === 'paired') autoDismiss(3500);
 }
 
 function dismiss() {
@@ -230,10 +234,10 @@ function dismiss() {
 
 // Something new wants the card. Transfers cut in front of passive toasts; passive toasts wait for transfers.
 function show(item) {
-  const passive = (k) => k === 'copied' || k === 'done' || k === 'failed';
+  const passive = (k) => k === 'copied' || k === 'done' || k === 'failed' || k === 'paired';
   if (!current && !leaving) return present(item);
   if (leaving) return queue.push(item);
-  if (item.kind === 'incoming' && passive(current.kind)) {
+  if ((item.kind === 'incoming' || item.kind === 'receiving') && passive(current.kind)) {
     clearTimeout(timer);
     current = item;
     render();
@@ -256,6 +260,18 @@ listen('accepted-message', ({ payload: p }) => {
 
 listen('ui', ({ payload: p }) => {
   switch (p.type) {
+    // A paired iPhone with auto-accept on: no buttons, straight to progress (or, for a message,
+    // a waiting card that 'accepted-message' replaces a moment later).
+    case 'autoAccepted': {
+      const req = p.request;
+      show(req.message != null
+        ? { kind: 'incoming', id: req.id, req, accepted: true }
+        : { kind: 'receiving', id: req.id, req, received: 0, total: req.total });
+      break;
+    }
+    case 'paired':
+      show({ kind: 'paired', id: 'paired-' + p.device.fingerprint, name: p.device.alias });
+      break;
     case 'progress':
       if (current && current.id === p.id && (current.kind === 'receiving' || current.kind === 'incoming')) {
         const wasIdle = current.kind !== 'receiving' || !current.received;
