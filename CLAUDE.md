@@ -2,9 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repo layout
+
+`ios/` is the iPhone app (run `xcodegen`/`xcodebuild` from inside it; `ios/tools/` is the protocol harness). `windows/` is Grasp for Windows (Cargo workspace; `windows/test-e2e.sh`). Docs stay at the root. GitHub: `itsaerolol/grasp` (public).
+
 ## What this is
 
-Grasp is two apps that speak the LocalSend v2.2 protocol: a personal iOS app whose share extension sends photos, files, and text from the iPhone share sheet, and **Grasp for Windows** (`desktop/`), a tray-only receiver that replaces the stock LocalSend desktop app. `README.md` has the flow diagram and protocol findings; `AGENT_PROMPT.md` is the original phased build brief (Phase 0 protocol proof → Phase 5 TestFlight). The brief listed a custom Windows receiver as out of scope; the owner has since reversed that, so the brief's "Out of scope" line no longer applies to `desktop/`. Everything else in the brief still binds.
+Grasp is two apps that speak the LocalSend v2.2 protocol: a personal iOS app whose share extension sends photos, files, and text from the iPhone share sheet, and **Grasp for Windows** (`windows/`), a tray-only receiver that replaces the stock LocalSend desktop app. `README.md` has the flow diagram and protocol findings; `AGENT_PROMPT.md` is the original phased build brief (Phase 0 protocol proof → Phase 5 TestFlight). The brief listed a custom Windows receiver as out of scope; the owner has since reversed that, so the brief's "Out of scope" line no longer applies to `windows/`. Everything else in the brief still binds.
 
 **Status.**
 - **Windows receiver:** built and working. The Rust core passes 10/10 protocol tests, and the toast UI was checked by the owner on screen (look, chime, Accept, progress bar, check, link auto-open). It has only run as a debug build on a test port; there is no installer, nothing has run on 53317, and Launch at login is untested.
@@ -16,23 +20,23 @@ Grasp is two apps that speak the LocalSend v2.2 protocol: a personal iOS app who
 Protocol tools (Node 18+, `openssl` on PATH, no npm install; work on any OS, use Git Bash on Windows):
 
 ```bash
-bash tools/test-e2e.sh                                  # 9 protocol tests against the mock, port 53399
-node tools/mock-receiver.mjs --auto-accept              # mock PC on 53317; also --reject, --pin 1234, --port, --inbox, --optional-client-cert
-node tools/ls-send.mjs --host <IP> --info               # print PC alias + cert fingerprint
-node tools/ls-send.mjs --host <IP> a.jpg b.pdf          # file send
-node tools/ls-send.mjs --host <IP> --text "hello"       # text message (expects 204)
+bash ios/tools/test-e2e.sh                                  # 9 protocol tests against the mock, port 53399
+node ios/tools/mock-receiver.mjs --auto-accept              # mock PC on 53317; also --reject, --pin 1234, --port, --inbox, --optional-client-cert
+node ios/tools/ls-send.mjs --host <IP> --info               # print PC alias + cert fingerprint
+node ios/tools/ls-send.mjs --host <IP> a.jpg b.pdf          # file send
+node ios/tools/ls-send.mjs --host <IP> --text "hello"       # text message (expects 204)
 ```
 
 `test-e2e.sh` has no per-test filter. To run one scenario, start the mock with the matching flags in one shell and run the corresponding `ls-send.mjs` line from the script in another. `ls-send.mjs` also takes `--pin-fp <FP>`, `--pin <PIN>`, `--no-client-cert`.
 
-Grasp for Windows (`desktop/`; Rust 1.96, MSVC build tools, Node and WebView2 are all present on the owner's PC):
+Grasp for Windows (`windows/`; Rust 1.96, MSVC build tools, Node and WebView2 are all present on the owner's PC):
 
 ```bash
-bash tools/test-e2e-desktop.sh                          # 10 protocol tests against the Rust core's headless build, port 53398
-cd desktop && cargo test --workspace                    # unit tests: filename sanitising, no-overwrite, link-safety rule, chime WAV
-cd desktop && npm install && node scripts/make-icons.mjs   # one-time: Tauri CLI + generated icons (src-tauri/icons is output)
-cd desktop && npx tauri build --debug --no-bundle       # builds target/debug/grasp-desktop.exe (use `npx tauri build` for the NSIS installer)
-GRASP_PORT=53318 desktop/target/debug/grasp-desktop.exe   # run it beside the real LocalSend, which owns 53317
+bash windows/test-e2e.sh                          # 10 protocol tests against the Rust core's headless build, port 53398
+cd windows && cargo test --workspace                    # unit tests: filename sanitising, no-overwrite, link-safety rule, chime WAV
+cd windows && npm install && node scripts/make-icons.mjs   # one-time: Tauri CLI + generated icons (src-tauri/icons is output)
+cd windows && npx tauri build --debug --no-bundle       # builds target/debug/grasp-desktop.exe (use `npx tauri build` for the NSIS installer)
+GRASP_PORT=53318 windows/target/debug/grasp-desktop.exe   # run it beside the real LocalSend, which owns 53317
 ```
 
 Always set `GRASP_PORT` while developing: the app and stock LocalSend can't both bind 53317, and a busy port shows up as a toast. The Tauri CLI must do the build: plain `cargo build` produces an exe that can't load `ui/`. `target/debug/grasp-headless` is the same receiver without the toast, for scripts: `--auto-accept`, `--reject`, or no flag to answer y/N on stdin.
@@ -69,9 +73,9 @@ Two targets, `Grasp` (app) and `GraspShare` (share extension), each compile `Sha
 
 **Share sheet top row.** `ShareDonation` donates an `INSendMessageIntent` whose `conversationIdentifier` is the peer id. The extension declares `IntentsSupported` in `project.yml` and reads `extensionContext.intent` to learn which PC was tapped (nil means the Grasp icon, so the default peer is used).
 
-**`tools/` is the regression harness.** `mock-receiver.mjs` enforces the real server's rules (mandatory mTLS, single session slot, same-IP + token uploads, sha256 check, message → 204) and `ls-send.mjs` mirrors `SendEngine` step for step. The message rule, status-code mapping, and fingerprint format each exist in four places (Swift, sender script, mock, and the Rust receiver in `desktop/core/src/server.rs`) and must change together. If the real LocalSend build behaves differently from the mock, update the mock and the Swift code to match reality. Both scripts cache their generated certs in gitignored `tools/.client-cert/` and `tools/.mock-server-cert/`, so their fingerprints are stable across runs.
+**`ios/tools/` is the regression harness.** `mock-receiver.mjs` enforces the real server's rules (mandatory mTLS, single session slot, same-IP + token uploads, sha256 check, message → 204) and `ls-send.mjs` mirrors `SendEngine` step for step. The message rule, status-code mapping, and fingerprint format each exist in four places (Swift, sender script, mock, and the Rust receiver in `windows/core/src/server.rs`) and must change together. If the real LocalSend build behaves differently from the mock, update the mock and the Swift code to match reality. Both scripts cache their generated certs in gitignored `ios/tools/.client-cert/` and `ios/tools/.mock-server-cert/`, so their fingerprints are stable across runs.
 
-### Grasp for Windows (`desktop/`)
+### Grasp for Windows (`windows/`)
 
 A Cargo workspace of two crates, split so the protocol can be tested without any UI.
 
@@ -101,7 +105,7 @@ A Cargo workspace of two crates, split so the protocol can be tested without any
 
 Do not change these or add alternatives. If one seems wrong, stop and ask.
 
-- Receiver is **Grasp for Windows** (`desktop/`), speaking the LocalSend v2.2 protocol so the iPhone code and the harness stay valid. It replaces the stock LocalSend desktop app, which stays a supported fallback. Manual accept on every transfer, no Quick Save, never auto-accept. PIN support stays in the Swift code but the Windows app has none.
+- Receiver is **Grasp for Windows** (`windows/`), speaking the LocalSend v2.2 protocol so the iPhone code and the harness stay valid. It replaces the stock LocalSend desktop app, which stays a supported fallback. Manual accept on every transfer, no Quick Save, never auto-accept. PIN support stays in the Swift code but the Windows app has none.
 - Grasp for Windows is deliberately minimal: tray icon and toast only, no window, no settings (the one exception is a "Launch at login" tray toggle, off by default). Prefer simplicity over customizability on both apps; don't add configuration.
 - One default PC, zero-tap send, no device picker in the extension. (`PeerStore` keeps an array internally so multi-PC is a later UI change.)
 - The share sheet stays open with progress until done. No background `URLSession`.

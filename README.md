@@ -3,7 +3,7 @@
 iPhone share sheet → Windows PC, AirDrop-style, in two apps that speak the LocalSend v2.2 protocol:
 
 - **Grasp (iOS):** a share extension. Pair once, then sharing is instant.
-- **Grasp for Windows (`desktop/`):** a tray-only receiver with no window. A chime plays and a toast slides in at the top right with **Accept** and **Reject**; Accept turns the same toast into a progress bar, then a check. Nothing is ever accepted automatically.
+- **Grasp for Windows (`windows/`):** a tray-only receiver with no window. A chime plays and a toast slides in at the top right with **Accept** and **Reject**; Accept turns the same toast into a progress bar, then a check. Nothing is ever accepted automatically.
 
 It speaks LocalSend's protocol, so stock LocalSend desktop still works as a fallback receiver.
 
@@ -24,7 +24,7 @@ On the PC, an accepted text message is copied to the clipboard, and opened in th
 
 | Area | Decision |
 |---|---|
-| PC | Windows 11, Grasp for Windows (`desktop/`), LocalSend-compatible, encryption ON |
+| PC | Windows 11, Grasp for Windows (`windows/`), LocalSend-compatible, encryption ON |
 | Payload | Photos/screenshots, files/docs, text/links (no video focus) |
 | Targets | One default PC, zero-tap send |
 | Lifetime | Sheet stays open with progress; no background transfer |
@@ -71,7 +71,7 @@ Shared/                      Compiled into both targets
   PeerStore.swift            Paired PC in App Group defaults
 App/                         Pairing UI: scan, pair, test message, unpair
 ShareExtension/              ShareViewController + status sheet
-desktop/                     Grasp for Windows (Cargo workspace)
+windows/                     Grasp for Windows (Cargo workspace)
   core/                      grasp-core: the LocalSend receiver (axum + rustls), no UI; `Ui` trait is the seam
     src/bin/headless.rs      Same receiver without the toast, for tests
   src-tauri/                 Tauri shell: tray icon, toast window, chime (synthesized), Accept/Reject plumbing
@@ -88,18 +88,18 @@ tools/
 
 ```bash
 # Prove protocol against the mock (Node 18+, openssl)
-bash tools/test-e2e.sh
+bash ios/tools/test-e2e.sh
 
 # Prove it against the real PC BEFORE touching Xcode
-node tools/ls-send.mjs --host <PC-IP> --info
-node tools/ls-send.mjs --host <PC-IP> some.jpg
-node tools/ls-send.mjs --host <PC-IP> --text "hello"
+node ios/tools/ls-send.mjs --host <PC-IP> --info
+node ios/tools/ls-send.mjs --host <PC-IP> some.jpg
+node ios/tools/ls-send.mjs --host <PC-IP> --text "hello"
 
 # Test and build Grasp for Windows (Rust, Node, MSVC build tools, WebView2)
-bash tools/test-e2e-desktop.sh
-cd desktop && cargo test --workspace
-cd desktop && npm install && npx tauri build --debug --no-bundle   # target/debug/grasp-desktop.exe
-GRASP_PORT=53318 desktop/target/debug/grasp-desktop.exe              # beside stock LocalSend, which owns 53317
+bash windows/test-e2e.sh
+cd windows && cargo test --workspace
+cd windows && npm install && npx tauri build --debug --no-bundle   # target/debug/grasp-desktop.exe
+GRASP_PORT=53318 windows/target/debug/grasp-desktop.exe              # beside stock LocalSend, which owns 53317
 
 # Generate and build the iOS project (macOS)
 brew install xcodegen
@@ -109,7 +109,7 @@ open Grasp.xcodeproj
 
 ## PC setup
 
-Grasp for Windows (once there is an installer; today it runs from `desktop/target`):
+Grasp for Windows (once there is an installer; today it runs from `windows/target`):
 
 1. Quit stock LocalSend first: both listen on TCP 53317, and Grasp shows a "Port 53317 is busy" toast if it can't bind.
 2. Run Grasp. It lives in the tray (Open Downloads, Launch at login, Quit). Files save to Downloads.

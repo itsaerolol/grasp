@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Proves Grasp for Windows' receiver (desktop/core, headless build) against the reference sender.
-# Run from anywhere: bash tools/test-e2e-desktop.sh
+# Proves Grasp for Windows' receiver (windows/core, headless build) against the reference sender.
+# Run from anywhere: bash windows/test-e2e.sh
 # Differences from test-e2e.sh (mock): our receiver does not request a client cert, so there is
 # no "no cert refused" case, and it has no PIN support.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")"
 T=$(mktemp -d); PORT=53398; PASS=0; FAIL=0
 cleanup() { kill "${RECV:-}" 2>/dev/null || true; rm -rf "$T"; }
 trap cleanup EXIT
 
-cargo build --quiet --manifest-path desktop/Cargo.toml -p grasp-core --bin grasp-headless
-BIN=desktop/target/debug/grasp-headless
+cargo build --quiet --manifest-path Cargo.toml -p grasp-core --bin grasp-headless
+BIN=target/debug/grasp-headless
 [ -f "$BIN.exe" ] && BIN="$BIN.exe"
 
 start_recv() { "$BIN" --port $PORT --inbox "$T/inbox" --state "$T/state" "$@" > "$T/recv.log" 2>&1 & RECV=$!; sleep 1.2; }
 stop_recv() { kill "$RECV" 2>/dev/null || true; wait "$RECV" 2>/dev/null || true; }
 check() { if eval "$2"; then echo "PASS  $1"; PASS=$((PASS+1)); else echo "FAIL  $1"; FAIL=$((FAIL+1)); cat "$T/recv.log"; fi; }
-send() { node tools/ls-send.mjs --host 127.0.0.1 --port $PORT "$@" > "$T/send.log" 2>&1; }
+send() { node ../ios/tools/ls-send.mjs --host 127.0.0.1 --port $PORT "$@" > "$T/send.log" 2>&1; }
 
 head -c 3000000 /dev/urandom > "$T/photo.jpg"; echo "hello grasp" > "$T/note.pdf"
 

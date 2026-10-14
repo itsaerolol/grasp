@@ -1,17 +1,23 @@
-*.xcodeproj/
-DerivedData/
-build/
 .DS_Store
 xcuserdata/
-tools/.mock-server-cert/
-tools/.client-cert/
+
+# iOS (ios/): XcodeGen output and builds; project.yml is the source of truth
+ios/*.xcodeproj/
+ios/build/
+ios/DerivedData/
+ios/App/Info.plist
+ios/App/Grasp.entitlements
+ios/ShareExtension/Info.plist
+ios/ShareExtension/GraspShare.entitlements
+
+# Protocol harness (ios/tools/): cached certs and test inboxes
+ios/tools/.mock-server-cert/
+ios/tools/.client-cert/
 mock-inbox/
-desktop/target/
-desktop/node_modules/
-desktop/src-tauri/gen/
+
+# Grasp for Windows (windows/)
+windows/target/
+windows/node_modules/
+windows/src-tauri/gen/
 headless-inbox/
 headless-state/
-App/Info.plist
-App/Grasp.entitlements
-ShareExtension/Info.plist
-ShareExtension/GraspShare.entitlements
