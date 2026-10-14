@@ -12,25 +12,27 @@ enum Discovery {
         func hash(into h: inout Hasher) { h.combine(certFingerprint) }
     }
 
-    /// Scans the local /24. `stopWhen` lets the extension bail out as soon as it finds its pinned PC.
+    /// Scans the phone's subnet (its real netmask, capped at a /20), own /24 first so the common case is fast.
+    /// `stopWhen` lets the extension bail out as soon as it finds its pinned PC.
     static func scan(me: ClientIdentity.Material,
-                     perHostTimeout: TimeInterval = 1.5,
-                     concurrency: Int = 48,
+                     perHostTimeout: TimeInterval? = nil,
+                     concurrency: Int? = nil,
                      stopWhen: (@Sendable (Found) -> Bool)? = nil) async -> [Found] {
-        guard let base = localSubnetBase() else { return [] }
-        let myIP = localIPv4()
-        // Annotated: comparing against the optional `myIP` otherwise infers [String?].
-        let hosts: [String] = (1...254).map { "\(base).\($0)" }.filter { $0 != myIP }
+        let hosts = scanTargets()
+        guard !hosts.isEmpty else { return [] }
+        let wide = hosts.count > 254
+        let timeout = perHostTimeout ?? (wide ? 1.0 : 1.5)
+        let width = concurrency ?? (wide ? 128 : 48)
 
         return await withTaskGroup(of: Found?.self) { group in
             var results: [Found] = []
             var iterator = hosts.makeIterator()
             func addNext() -> Bool {
                 guard let host = iterator.next() else { return false }
-                group.addTask { await probe(host: host, me: me, timeout: perHostTimeout) }
+                group.addTask { await probe(host: host, me: me, timeout: timeout) }
                 return true
             }
-            for _ in 0..<concurrency { if !addNext() { break } }
+            for _ in 0..<width { if !addNext() { break } }
             while let result = await group.next() {
                 if let found = result {
                     results.append(found)
@@ -63,6 +65,44 @@ enum Discovery {
 
     // MARK: Interfaces
 
+    /// IPv4 address and netmask of en0, as host-order integers.
+    static func localInterface() -> (ip: UInt32, mask: UInt32)? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let ifa = ptr.pointee
+            guard let addr = ifa.ifa_addr, let mask = ifa.ifa_netmask,
+                  addr.pointee.sa_family == UInt8(AF_INET), String(cString: ifa.ifa_name) == "en0" else { continue }
+            let ip = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+            let m = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+            return (ip, m)
+        }
+        return nil
+    }
+
+    static func dotted(_ v: UInt32) -> String { "\(v >> 24).\((v >> 16) & 255).\((v >> 8) & 255).\(v & 255)" }
+
+    /// Hosts to probe: everything in the phone's subnet except itself, the network and broadcast addresses.
+    /// Subnets wider than a /20 are clamped to the /20 around the phone; /31 and /32 have nothing to scan.
+    /// Pure so it can be unit tested.
+    static func scanTargets(ip: UInt32, mask: UInt32) -> [String] {
+        let prefix = max(mask.nonzeroBitCount, 20)
+        guard prefix <= 30 else { return [] }
+        let m: UInt32 = ~UInt32(0) << UInt32(32 - prefix)
+        let network = ip & m, broadcast = network | ~m
+        let ownBlock = ip & 0xFFFF_FF00
+        let inOwn = (max(network, ownBlock)...min(broadcast, ownBlock | 0xFF))
+        let rest = (network...broadcast).filter { $0 & 0xFFFF_FF00 != ownBlock }
+        return (Array(inOwn) + rest)
+            .filter { $0 != ip && $0 != network && $0 != broadcast }
+            .map(dotted)
+    }
+
+    static func scanTargets() -> [String] {
+        guard let i = localInterface() else { return [] }
+        return scanTargets(ip: i.ip, mask: i.mask)
+    }
     static func localIPv4() -> String? {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
@@ -77,13 +117,5 @@ enum Discovery {
             return String(cString: buf)
         }
         return nil
-    }
-
-    /// "192.168.1" for 192.168.1.42. v1 assumes a /24 (home routers). Larger subnets: v2.
-    static func localSubnetBase() -> String? {
-        guard let ip = localIPv4() else { return nil }
-        let parts = ip.split(separator: ".")
-        guard parts.count == 4 else { return nil }
-        return parts.prefix(3).joined(separator: ".")
     }
 }

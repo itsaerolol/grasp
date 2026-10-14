@@ -184,3 +184,44 @@ final class LSErrorTests: XCTestCase {
         XCTAssertTrue(LSError.from(status: 403, body: "").errorDescription!.contains("30 seconds"))
     }
 }
+
+final class ScanTargetsTests: XCTestCase {
+    private func v4(_ a: UInt32, _ b: UInt32, _ c: UInt32, _ d: UInt32) -> UInt32 { a << 24 | b << 16 | c << 8 | d }
+    private let m24: UInt32 = 0xFFFF_FF00, m20: UInt32 = 0xFFFF_F000
+
+    func testSlash24IsTheOldBehaviour() {
+        let t = Discovery.scanTargets(ip: v4(192, 168, 1, 42), mask: m24)
+        XCTAssertEqual(t.count, 253)                       // 254 hosts minus ourselves
+        XCTAssertFalse(t.contains("192.168.1.42"))
+        XCTAssertFalse(t.contains("192.168.1.0")); XCTAssertFalse(t.contains("192.168.1.255"))
+        XCTAssertEqual(t.first, "192.168.1.1")
+    }
+
+    func testSlash20CoversThePCFromTheReportedNetwork() {
+        // Phone 172.20.0.68, PC 172.20.10.228, mask 255.255.240.0.
+        let t = Discovery.scanTargets(ip: v4(172, 20, 0, 68), mask: m20)
+        XCTAssertEqual(t.count, 4093)                      // 4094 hosts minus ourselves
+        XCTAssertTrue(t.contains("172.20.10.228"))
+        XCTAssertTrue(t.contains("172.20.15.254"))
+        XCTAssertFalse(t.contains("172.20.0.68")); XCTAssertFalse(t.contains("172.20.0.0"))
+        XCTAssertFalse(t.contains("172.20.15.255")); XCTAssertFalse(t.contains("172.20.16.1"))
+        XCTAssertTrue(t.prefix(253).allSatisfy { $0.hasPrefix("172.20.0.") }, "own /24 is probed first")
+        XCTAssertEqual(Set(t).count, t.count, "no duplicates")
+    }
+
+    func testWiderThanSlash20IsClampedToTheSlash20() {
+        let t = Discovery.scanTargets(ip: v4(10, 1, 7, 9), mask: 0xFFFF_0000)   // /16
+        XCTAssertLessThanOrEqual(t.count, 4094)
+        XCTAssertTrue(t.allSatisfy { $0.hasPrefix("10.1.") })
+    }
+
+    func testSmallHotspotSubnet() {
+        let t = Discovery.scanTargets(ip: v4(172, 20, 10, 2), mask: 0xFFFF_FFF0)   // iPhone hotspot /28
+        XCTAssertEqual(t.count, 13)
+        XCTAssertTrue(t.allSatisfy { $0.hasPrefix("172.20.10.") })
+    }
+
+    func testNothingToScanOnATinySubnet() {
+        XCTAssertTrue(Discovery.scanTargets(ip: v4(10, 0, 0, 1), mask: 0xFFFF_FFFE).isEmpty)
+    }
+}
