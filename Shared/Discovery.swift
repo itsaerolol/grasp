@@ -12,17 +12,14 @@ enum Discovery {
         func hash(into h: inout Hasher) { h.combine(certFingerprint) }
     }
 
-    /// Scans the phone's subnet (its real netmask, capped at a /20), own /24 first so the common case is fast.
-    /// `stopWhen` lets the extension bail out as soon as it finds its pinned PC.
+    /// Sweeps the phone's own /24, gently. Only ever started by a tap in the app: on managed (enterprise)
+    /// Wi-Fi a wider or faster sweep gets the phone kicked off the network.
     static func scan(me: ClientIdentity.Material,
-                     perHostTimeout: TimeInterval? = nil,
-                     concurrency: Int? = nil,
-                     stopWhen: (@Sendable (Found) -> Bool)? = nil) async -> [Found] {
+                     perHostTimeout: TimeInterval = 1.5,
+                     concurrency: Int = 16) async -> [Found] {
         let hosts = scanTargets()
         guard !hosts.isEmpty else { return [] }
-        let wide = hosts.count > 254
-        let timeout = perHostTimeout ?? (wide ? 1.0 : 1.5)
-        let width = concurrency ?? (wide ? 128 : 48)
+        let timeout = perHostTimeout, width = concurrency
 
         return await withTaskGroup(of: Found?.self) { group in
             var results: [Found] = []
@@ -34,10 +31,7 @@ enum Discovery {
             }
             for _ in 0..<width { if !addNext() { break } }
             while let result = await group.next() {
-                if let found = result {
-                    results.append(found)
-                    if stopWhen?(found) == true { group.cancelAll(); break }
-                }
+                if let found = result { results.append(found) }
                 _ = addNext()
             }
             return Array(Set(results))
@@ -51,16 +45,13 @@ enum Discovery {
         return Found(host: host, info: info, certFingerprint: fp)
     }
 
-    /// Resolve the pinned PC: try its last IP, else rescan and match by fingerprint (DHCP moved it).
+    /// Reach the pinned PC at its stored address (pinned GET /info). Never sweeps: a share must not be able
+    /// to knock the phone off Wi-Fi. If the PC moved, the user re-adds it in the app.
     static func resolve(_ peer: Peer, me: ClientIdentity.Material) async -> Peer? {
         let direct = LSClient(host: peer.host, port: peer.port, expectedFingerprint: peer.certFingerprint,
-                              me: me, connectTimeout: 2)
-        if (try? await direct.info()) != nil {
-            var p = peer; p.lastSeen = Date(); PeerStore.save(p); return p
-        }
-        let hits = await scan(me: me, stopWhen: { $0.certFingerprint == peer.certFingerprint })
-        guard let hit = hits.first(where: { $0.certFingerprint == peer.certFingerprint }) else { return nil }
-        var p = peer; p.host = hit.host; p.lastSeen = Date(); PeerStore.save(p); return p
+                              me: me, connectTimeout: 3)
+        guard (try? await direct.info()) != nil else { return nil }
+        var p = peer; p.lastSeen = Date(); PeerStore.save(p); return p
     }
 
     // MARK: Interfaces
@@ -87,19 +78,18 @@ enum Discovery {
 
     static func dotted(_ v: UInt32) -> String { "\(v >> 24).\((v >> 16) & 255).\((v >> 8) & 255).\(v & 255)" }
 
-    /// Hosts to probe: everything in the phone's subnet except itself, the network and broadcast addresses.
-    /// Subnets wider than a /20 are clamped to the /20 around the phone; /31 and /32 have nothing to scan.
-    /// Pure so it can be unit tested.
+    /// Hosts to probe: the phone's own /24, or its real subnet when that is smaller (a hotspot /28),
+    /// minus itself and the network/broadcast addresses. Pure so it can be unit tested.
     static func scanTargets(ip: UInt32, mask: UInt32) -> [String] {
-        let prefix = max(mask.nonzeroBitCount, 20)
+        let prefix = max(mask.nonzeroBitCount, 24)
         guard prefix <= 30 else { return [] }
         let m: UInt32 = ~UInt32(0) << UInt32(32 - prefix)
         let network = ip & m, broadcast = network | ~m
-        let ownBlock = ip & 0xFFFF_FF00
-        let inOwn = (max(network, ownBlock)...min(broadcast, ownBlock | 0xFF))
-        let rest = (network...broadcast).filter { $0 & 0xFFFF_FF00 != ownBlock }
-        return (Array(inOwn) + rest)
-            .filter { $0 != ip && $0 != network && $0 != broadcast }
+        // In a wider subnet the /24's .0 and .255 are ordinary hosts; only the real subnet's edges are excluded.
+        let real: UInt32 = mask == 0 ? m : mask
+        let realNet = ip & real, realBroadcast = realNet | ~real
+        return (network...broadcast)
+            .filter { $0 != ip && $0 != realNet && $0 != realBroadcast }
             .map(dotted)
     }
 

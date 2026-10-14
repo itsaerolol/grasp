@@ -46,6 +46,8 @@ struct LSPrepareUploadResponse: Codable, Sendable {
 
 enum LSError: LocalizedError {
     case unreachable(String)
+    /// The paired PC didn't answer at its stored address (Grasp doesn't sweep the network on its own).
+    case pcNotAnswering(alias: String, host: String)
     case fingerprintMismatch(expected: String, got: String)
     case pinRequired
     case rejected
@@ -57,6 +59,8 @@ enum LSError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .pcNotAnswering(let alias, let host):
+            return "Can't reach \(alias) at \(host). Is Grasp running on it? If its IP changed, re-add it in Grasp."
         case .unreachable(let host): return "Can't reach \(host). Is Grasp running on the PC, on the same Wi-Fi?"
         case .fingerprintMismatch: return "PC identity changed. Re-pair in the Grasp app."
         case .pinRequired: return "PC requires a PIN. Turn off PIN in LocalSend or set it in Grasp."

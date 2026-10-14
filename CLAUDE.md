@@ -49,7 +49,7 @@ DEVELOPMENT_TEAM=<TEAMID> xcodegen generate
 xcodebuild -project Grasp.xcodeproj -scheme Grasp -destination 'generic/platform=iOS Simulator' build
 ```
 
-`project.yml` is the source of truth. `Grasp.xcodeproj`, `App/Info.plist`, `ShareExtension/Info.plist`, and both `.entitlements` files are XcodeGen output: change `project.yml` and regenerate, never hand-edit them. There is no test target yet; the brief calls for a `GraspTests` target added through `project.yml`.
+`project.yml` is the source of truth. `Grasp.xcodeproj`, `App/Info.plist`, `ShareExtension/Info.plist`, and both `.entitlements` files are XcodeGen output: change `project.yml` and regenerate, never hand-edit them. `GraspTests` (unit tests, compiles `Shared/` directly) runs with `xcodebuild test -project Grasp.xcodeproj -scheme GraspTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`. Regenerate with `DEVELOPMENT_TEAM` set or device signing fails.
 
 ## Architecture
 
@@ -63,7 +63,7 @@ Two targets, `Grasp` (app) and `GraspShare` (share extension), each compile `Sha
 
 **One `LSClient` per host, two trust modes.** `LSSessionDelegate` answers both TLS challenges. With `expectedFingerprint: nil` it accepts any server cert and records what it saw (trust on first use, used by `Discovery.probe` during scan and pairing). With a fingerprint it pins and cancels the handshake on mismatch, which `LSClient.mapTransport` turns into `LSError.fingerprintMismatch`.
 
-**Discovery has no multicast.** `Discovery.scan` POSTs `/register` to every host on the local /24 (48 concurrent, 1.5s each), derived from `en0`. `Discovery.resolve` is what every send goes through: `GET /info` at the last host with the pin, else rescan, match by fingerprint, and save the new host to `PeerStore`.
+**Discovery has no multicast, and never sweeps on its own.** `Discovery.scan` POSTs `/register` to every host in the phone's own /24 (or its real subnet if smaller, e.g. a hotspot /28), 16 concurrent, 1.5s each, derived from `en0` and its netmask. It runs only when the user taps Scan in the app. `Discovery.resolve` is what every send goes through: one pinned `GET /info` at the stored host, no rescan; failure is `LSError.pcNotAnswering` ("re-add it if its IP changed"). Reason (verified on the owner's WPA2-Enterprise network, Oct 2026): a /20 sweep at 128 concurrent got the phone kicked off the Wi-Fi every time, and an automatic sweep from a share would do the same. Pairing by IP (Manual IP sheet) is the normal path on such networks.
 
 **One share is one session.** `SendEngine.run`: `PayloadBuilder.build` (copy each attachment into a per-share work dir, HEIC/HEIF→JPG, URLs and plain text → `.text`) → `Discovery.resolve` → `prepareUpload` → sequential `upload` per accepted file → `ShareDonation.donate`. `SendEngine.Phase` is the only thing `ShareStatusView` renders. `SendEngine.describe` holds the message-vs-files rule: exactly one text item becomes a LocalSend message (one `text/plain` file with `preview` set, PC returns 204, nothing is uploaded); text mixed with files is sent as `Note.txt`.
 
@@ -106,6 +106,6 @@ Do not change these or add alternatives. If one seems wrong, stop and ask.
 - One default PC, zero-tap send, no device picker in the extension. (`PeerStore` keeps an array internally so multi-PC is a later UI change.)
 - The share sheet stays open with progress until done. No background `URLSession`.
 - Photos are always converted HEIC→JPG (quality 0.9, EXIF kept).
-- LAN only: /24 HTTP scan plus last-known IP. No multicast entitlement, no Bonjour, no Tailscale.
+- LAN only: stored IP for every send, plus a tap-only /24 HTTP scan and Manual IP for pairing (owner-approved change, Oct 2026: no automatic sweeps, they get the phone kicked off managed Wi-Fi). No multicast entitlement, no Bonjour, no Tailscale.
 - Bundle IDs `com.itsaerolol.grasp` and `com.itsaerolol.grasp.share`, iOS 18 minimum, personal TestFlight distribution.
 - Out of scope: background transfers, video optimization, multi-PC picker, Tailscale/off-LAN, multicast discovery, App Store polish. (A custom Windows receiver was out of scope in the original brief and is now in scope.)

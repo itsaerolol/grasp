@@ -169,7 +169,7 @@ final class LSErrorTests: XCTestCase {
 
     func testEveryUserFacingErrorIsOneActionableLine() {
         let all: [LSError] = [
-            .unreachable("PC"), .fingerprintMismatch(expected: "A", got: "B"), .pinRequired, .rejected, .busy,
+            .unreachable("PC"), .pcNotAnswering(alias: "TEMPEST", host: "172.20.10.228"), .fingerprintMismatch(expected: "A", got: "B"), .pinRequired, .rejected, .busy,
             .tooManyRequests, .checksumMismatch, .badStatus(500, "x"), .noClientIdentity,
         ]
         for e in all {
@@ -197,22 +197,22 @@ final class ScanTargetsTests: XCTestCase {
         XCTAssertEqual(t.first, "192.168.1.1")
     }
 
-    func testSlash20CoversThePCFromTheReportedNetwork() {
-        // Phone 172.20.0.68, PC 172.20.10.228, mask 255.255.240.0.
+    func testWiderSubnetOnlySweepsOwnSlash24() {
+        // Phone 172.20.0.68 on a /20 (owner's WPA2-Enterprise network). A wider sweep got the phone kicked off
+        // the Wi-Fi, so only the own /24 is probed; the PC at 172.20.10.228 is reached by its stored IP instead.
         let t = Discovery.scanTargets(ip: v4(172, 20, 0, 68), mask: m20)
-        XCTAssertEqual(t.count, 4093)                      // 4094 hosts minus ourselves
-        XCTAssertTrue(t.contains("172.20.10.228"))
-        XCTAssertTrue(t.contains("172.20.15.254"))
-        XCTAssertFalse(t.contains("172.20.0.68")); XCTAssertFalse(t.contains("172.20.0.0"))
-        XCTAssertFalse(t.contains("172.20.15.255")); XCTAssertFalse(t.contains("172.20.16.1"))
-        XCTAssertTrue(t.prefix(253).allSatisfy { $0.hasPrefix("172.20.0.") }, "own /24 is probed first")
+        XCTAssertEqual(t.count, 254)                       // .0 is the /20's network address; .255 is a real host
+        XCTAssertTrue(t.allSatisfy { $0.hasPrefix("172.20.0.") })
+        XCTAssertTrue(t.contains("172.20.0.255"))
+        XCTAssertFalse(t.contains("172.20.0.0")); XCTAssertFalse(t.contains("172.20.0.68"))
+        XCTAssertFalse(t.contains("172.20.10.228"))
         XCTAssertEqual(Set(t).count, t.count, "no duplicates")
     }
 
-    func testWiderThanSlash20IsClampedToTheSlash20() {
+    func testVeryWideSubnetIsStillOneSlash24() {
         let t = Discovery.scanTargets(ip: v4(10, 1, 7, 9), mask: 0xFFFF_0000)   // /16
-        XCTAssertLessThanOrEqual(t.count, 4094)
-        XCTAssertTrue(t.allSatisfy { $0.hasPrefix("10.1.") })
+        XCTAssertEqual(t.count, 255)
+        XCTAssertTrue(t.allSatisfy { $0.hasPrefix("10.1.7.") })
     }
 
     func testSmallHotspotSubnet() {

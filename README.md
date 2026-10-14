@@ -12,7 +12,7 @@ It speaks LocalSend's protocol, so stock LocalSend desktop still works as a fall
 ```
 Share sheet ──tap PC (suggestion row) or Grasp icon──▶ GraspShare extension
   1. Normalize items: HEIC→JPG, URL/text→message, files copied to tmp
-  2. Resolve PC: GET /info at last IP (pinned cert) ▸ else /24 scan, match by cert fingerprint
+  2. Resolve PC: GET /info at its stored IP (pinned cert); no automatic network sweep
   3. POST /prepare-upload ──▶ chime + toast on the PC: Accept / Reject ──▶ tokens (or 204 for text)
   4. POST /upload per file, streamed from disk, sha256 verified by the PC
   5. Donate INSendMessageIntent ▸ PC stays in the share sheet's top row
@@ -32,7 +32,7 @@ On the PC, an accepted text message is copied to the clipboard, and opened in th
 | Text | LocalSend message; after Accept, copied to the clipboard and opened if it is one `http(s)` link |
 | Accept | Manual accept on the PC for everything, never automatic; unanswered for 30s = reject |
 | PC app | Tray + toast only, no window, no settings; always dark; top right of the primary monitor |
-| Network | LAN only, /24 HTTP scan (no multicast entitlement) |
+| Network | LAN only; pair by tap-only /24 scan or IP address; sends use the stored IP (no multicast entitlement) |
 | Distribution | Personal, TestFlight. Bundle `com.itsaerolol.grasp`, iOS 18+ |
 
 ## Protocol findings (LocalSend source, Oct 2026, verified on the real PC)

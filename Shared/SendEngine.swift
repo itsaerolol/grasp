@@ -38,7 +38,7 @@ final class SendEngine: ObservableObject {
 
             phase = .connecting(stored.alias)
             guard let peer = await Discovery.resolve(stored, me: me) else {
-                throw LSError.unreachable(stored.alias)
+                throw LSError.pcNotAnswering(alias: stored.alias, host: stored.host)
             }
             let client = LSClient(host: peer.host, port: peer.port, expectedFingerprint: peer.certFingerprint, me: me)
             activeClient = client

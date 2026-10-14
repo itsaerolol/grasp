@@ -23,18 +23,17 @@ final class PairingModel: ObservableObject {
     func boot() async {
         do { me = try ClientIdentity.loadOrCreate() }
         catch { show(.error, "Identity setup failed: \(error.localizedDescription)"); return }
-        if paired == nil { await scan() } else { await refreshStatus() }
+        // Never scan on our own: on managed Wi-Fi a subnet sweep gets the phone kicked off the network.
+        await refreshStatus()
     }
 
-    /// Direct check first; if the PC moved (DHCP), `resolve` rescans and updates the stored address.
+    /// One pinned GET /info at the last known address. No scanning.
     func refreshStatus() async {
         guard let me, let peer = paired else { return }
         reachable = nil
         let direct = LSClient(host: peer.host, port: peer.port, expectedFingerprint: peer.certFingerprint,
                               me: me, connectTimeout: 2)
-        if (try? await direct.info()) != nil { reachable = true; return }
-        if let moved = await Discovery.resolve(peer, me: me) { paired = moved; reachable = true }
-        else { reachable = false }
+        reachable = (try? await direct.info()) != nil
     }
 
     /// First scan also triggers the iOS Local Network permission prompt.
@@ -74,7 +73,6 @@ final class PairingModel: ObservableObject {
         if let p = paired { PeerStore.remove(p) }
         ShareDonation.deleteAll()
         paired = nil; reachable = nil; found = []; scanned = false
-        Task { await scan() }
     }
 
     func sendTest() async {
@@ -82,7 +80,9 @@ final class PairingModel: ObservableObject {
         sending = true
         defer { sending = false }
         do {
-            guard let p = await Discovery.resolve(peer, me: me) else { throw LSError.unreachable(peer.alias) }
+            guard let p = await Discovery.resolve(peer, me: me) else {
+                throw LSError.pcNotAnswering(alias: peer.alias, host: peer.host)
+            }
             paired = p; reachable = true
             let client = LSClient(host: p.host, port: p.port, expectedFingerprint: p.certFingerprint, me: me)
             let text = "Grasp test from iPhone"
@@ -95,7 +95,7 @@ final class PairingModel: ObservableObject {
             show(.success, "Delivered to \(p.alias)")
         } catch {
             UINotificationFeedbackGenerator().notificationOccurred(.error)
-            if case LSError.unreachable = error { reachable = false }
+            switch error { case LSError.unreachable, LSError.pcNotAnswering: reachable = false; default: break }
             show(.error, error.localizedDescription)
         }
     }
@@ -261,6 +261,10 @@ private struct FindPCSection: View {
                     FoundRow(alias: "Scanning PC", host: "000.000.0.000").redacted(reason: .placeholder)
                 }
             }
+            if !model.scanning && !model.scanned {
+                Button { Task { await model.scan() } } label: { Label("Scan network", systemImage: "dot.radiowaves.left.and.right") }
+                    .disabled(model.me == nil)
+            }
             ForEach(rows, id: \.certFingerprint) { f in
                 Button { model.pair(f) } label: { FoundRow(alias: f.info.alias, host: f.host, chevron: true) }
                     .buttonStyle(.plain)
@@ -286,7 +290,7 @@ private struct FindPCSection: View {
                 }
             }
         }
-        if !rows.isEmpty || model.scanning {
+        if !rows.isEmpty || model.scanning || !model.scanned {
             Section {
                 Button { showManual = true } label: { Label("Enter IP address", systemImage: "network") }
             }
@@ -327,7 +331,6 @@ private struct FinderSheet: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
-        .task { if !model.scanned { await model.scan() } }
         .presentationDetents([.medium, .large])
     }
 }
