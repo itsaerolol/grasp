@@ -6,6 +6,8 @@ import { join } from 'node:path';
 
 export const PORT = 53317;
 export const API = '/api/localsend/v2';
+// Grasp for Windows extension: code pairing (advertised as `grasp: 1` in /info and /register).
+export const GRASP_API = '/api/grasp/v1';
 export const VERSION = '2.2';
 
 // LocalSend fingerprint: uppercase hex SHA-256 of cert DER (core/src/crypto/cert.rs).

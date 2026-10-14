@@ -37,5 +37,14 @@ start_mock --auto-accept --optional-client-cert
 check "optional client cert (LocalSend 1.17): send without cert works" "send --no-client-cert --text hi && grep -q '204' '$T/send.log'"
 stop_mock
 
+# Grasp for Windows code pairing, as the mock implements it (same rules as windows/core/src/pairing.rs).
+start_mock --auto-accept --optional-client-cert --pair-code 427   # Grasp for Windows: client cert optional
+check "info advertises code pairing" "send --info && grep -q 'code pairing: supported' '$T/send.log'"
+check "wrong code refused with attempts left" "! send --pair 111 && grep -q 'Wrong code (4 left)' '$T/send.log'"
+check "pairing needs a client cert" "! send --no-client-cert --pair 427 && grep -q 'Client certificate required' '$T/send.log'"
+check "right code pairs" "send --pair 427 && grep -q 'paired with Mock PC' '$T/send.log'"
+check "code is single-use" "! send --pair 427 && grep -q 'not open' '$T/send.log'"
+stop_mock
+
 echo "---- $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

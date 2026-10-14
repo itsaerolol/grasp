@@ -5,14 +5,15 @@
 //  - /register: claimed fingerprint must equal presented client cert fingerprint
 //  - single session slot (409), upload must come from the same IP + valid token (403), sha256 check (422)
 //  - single text/plain file with preview = message -> 204 after accept, no upload
-// Usage: node tools/mock-receiver.mjs [--auto-accept|--reject] [--pin 1234] [--port 53317] [--inbox ./mock-inbox] [--throttle-kbps 500]
+//  - with --pair-code: acts like Grasp for Windows' code pairing (POST /api/grasp/v1/pair, `grasp: 1` in info)
+// Usage: node tools/mock-receiver.mjs [--auto-accept|--reject] [--pin 1234] [--port 53317] [--inbox ./mock-inbox] [--throttle-kbps 500] [--pair-code 427]
 import https from 'node:https';
 import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
-import { API, PORT, VERSION, ensureCert, fingerprintOfDer } from './lib.mjs';
+import { API, GRASP_API, PORT, VERSION, ensureCert, fingerprintOfDer } from './lib.mjs';
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -23,12 +24,16 @@ const pin = opt('--pin', null);
 const mode = flag('--auto-accept') ? 'accept' : flag('--reject') ? 'reject' : 'ask';
 const mandatoryClientCert = !flag('--optional-client-cert');
 const throttleKbps = Number(opt('--throttle-kbps', 0)); // slow uploads so Cancel / memory can be exercised
+// Code pairing, same rules as windows/core/src/pairing.rs: one window, 5 wrong tries closes it.
+let pairing = opt('--pair-code', null) != null ? { code: opt('--pair-code'), attempts: 0 } : null;
+const graspMode = pairing != null;
+const paired = new Set();
 mkdirSync(inbox, { recursive: true });
 
 const here = dirname(fileURLToPath(import.meta.url));
 const me = ensureCert(join(here, '.mock-server-cert'), 'Mock PC');
 const info = { alias: 'Mock PC', version: VERSION, deviceModel: 'Windows', deviceType: 'desktop',
-  fingerprint: randomUUID(), download: false };
+  fingerprint: randomUUID(), download: false, ...(graspMode ? { grasp: 1 } : {}) };
 
 let session = null; // { id, ip, files: {fileId: {dto, token, done}} }
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -77,7 +82,7 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
           session = { id: randomUUID(), ip, files: {}, active: false };
           const isMessage = files.length === 1 && files[0].fileType === 'text/plain' && files[0].preview != null;
           log(isMessage ? `MESSAGE from ${body.info.alias} (client-cert fingerprint ${clientFp}): "${files[0].preview}"`
-            : `prepare-upload from ${body.info.alias} (${clientFp?.slice(0, 8)}…): ${files.map((f) => `${f.fileName} ${f.size}B ${f.fileType}`).join(', ')}`);
+            : `prepare-upload from ${body.info.alias} (${clientFp?.slice(0, 8)}…${paired.has(clientFp) ? ', paired' : ''}): ${files.map((f) => `${f.fileName} ${f.size}B ${f.fileType}`).join(', ')}`);
           // Like the Rust receiver's PendingGuard: a sender that disconnects mid-prompt frees the slot.
           const mine = session; let gone = false;
           req.socket.once('close', () => { gone = true; if (session === mine && !mine.active) { log('sender disconnected before answer'); session = null; } });
@@ -116,6 +121,22 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
             json(res, 200);
           });
           return;
+        }
+
+        case `POST ${GRASP_API}/pair`: {
+          if (!graspMode) return json(res, 404, { message: 'Not found' });
+          const body = await readJson(req);
+          if (!clientFp) return json(res, 400, { message: 'Client certificate required' });
+          if (!pairing) return json(res, 409, { message: 'Pairing is not open on the PC' });
+          if (String(body.code ?? '').trim() !== pairing.code) {
+            pairing.attempts += 1;
+            if (pairing.attempts >= 5) { pairing = null; log('PAIR locked after 5 wrong codes'); return json(res, 429, { message: 'Too many wrong codes' }); }
+            log(`PAIR wrong code from ${body.info?.alias}`);
+            return json(res, 401, { message: 'Wrong code', attemptsLeft: 5 - pairing.attempts });
+          }
+          pairing = null; paired.add(clientFp);
+          log(`PAIRED ${body.info?.alias} ${clientFp}`);
+          return json(res, 200, info);
         }
 
         case `POST ${API}/cancel`:

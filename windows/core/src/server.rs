@@ -3,9 +3,13 @@
 
 use std::{
     collections::HashMap,
+    future::Future,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -13,12 +17,13 @@ use anyhow::Result;
 use axum::{
     body::Body,
     extract::{ConnectInfo, DefaultBodyLimit, Query, State},
+    Extension,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use axum_server::tls_rustls::RustlsConfig;
+use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,11 +31,15 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{
     cert::Identity,
+    pairing::{PairOutcome, PairedDevice, Pairing, PairingWindow},
+    tls::{self, PeerCert, PeerCertAcceptor},
     ui::{FileSummary, IncomingRequest, Ui, UiEvent},
 };
 
 pub const API: &str = "/api/localsend/v2";
 pub const VERSION: &str = "2.2";
+/// Grasp-only extension: code pairing. Advertised as `"grasp": 1` in /info and /register.
+pub const GRASP_API: &str = "/api/grasp/v1";
 /// How long the toast waits for the human. Silence is a rejection, never an acceptance.
 /// (The sender's own prepare-upload timeout is 600s; this is deliberately much shorter.)
 const DECISION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -41,6 +50,10 @@ pub struct Config {
     pub port: u16,
     pub inbox: PathBuf,
     pub alias: String,
+    /// Where paired devices are remembered (`paired.json`).
+    pub state: PathBuf,
+    /// Skip the Accept prompt for paired devices. Never applies to anyone else.
+    pub auto_accept_paired: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -62,6 +75,9 @@ struct DeviceInfo {
     protocol: Option<String>,
     #[serde(default)]
     download: Option<bool>,
+    /// Grasp for Windows only: supports code pairing (`/api/grasp/v1/pair`). Stock LocalSend ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grasp: Option<u8>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -133,14 +149,70 @@ enum Slot {
 
 struct Inner {
     ui: Arc<dyn Ui>,
-    cfg: Config,
     info: DeviceInfo,
     slot: Mutex<Slot>,
+    inbox: Mutex<PathBuf>,
+    auto_accept: AtomicBool,
+    pairing: Pairing,
 }
 
 type AppState = Arc<Inner>;
 
+#[derive(Deserialize)]
+struct PairReq {
+    code: String,
+    #[serde(default)]
+    info: DeviceInfo,
+}
+
+/// What the shell uses to change settings and drive pairing while the server runs.
+#[derive(Clone)]
+pub struct Handle(Arc<Inner>);
+
+impl Handle {
+    pub fn inbox(&self) -> PathBuf {
+        self.0.inbox.lock().unwrap().clone()
+    }
+    pub fn set_inbox(&self, dir: PathBuf) {
+        *self.0.inbox.lock().unwrap() = dir;
+    }
+    pub fn auto_accept_paired(&self) -> bool {
+        self.0.auto_accept.load(Ordering::Relaxed)
+    }
+    pub fn set_auto_accept_paired(&self, on: bool) {
+        self.0.auto_accept.store(on, Ordering::Relaxed);
+    }
+    pub fn start_pairing(&self) -> PairingWindow {
+        self.0.pairing.open()
+    }
+    pub fn start_pairing_with(&self, code: &str, lifetime: Duration) -> PairingWindow {
+        self.0.pairing.open_with(code.to_string(), lifetime)
+    }
+    pub fn cancel_pairing(&self) {
+        self.0.pairing.close();
+    }
+    pub fn pairing(&self) -> Option<PairingWindow> {
+        self.0.pairing.current()
+    }
+    pub fn paired_devices(&self) -> Vec<PairedDevice> {
+        self.0.pairing.devices()
+    }
+    pub fn unpair(&self, fingerprint: &str) {
+        self.0.pairing.unpair(fingerprint);
+    }
+}
+
 pub async fn serve(cfg: Config, identity: Identity, ui: Arc<dyn Ui>) -> Result<()> {
+    let (_handle, server) = build(cfg, identity, ui)?;
+    server.await
+}
+
+/// Builds the receiver. Returns a handle for the shell and the future that runs the server.
+pub fn build(
+    cfg: Config,
+    identity: Identity,
+    ui: Arc<dyn Ui>,
+) -> Result<(Handle, impl Future<Output = Result<()>> + Send + 'static)> {
     // rustls needs exactly one crypto provider installed process-wide. Ignore "already installed".
     let _ = rustls::crypto::ring::default_provider().install_default();
     std::fs::create_dir_all(&cfg.inbox)?;
@@ -155,9 +227,18 @@ pub async fn serve(cfg: Config, identity: Identity, ui: Arc<dyn Ui>) -> Result<(
         port: Some(cfg.port),
         protocol: Some("https".into()),
         download: Some(false),
+        grasp: Some(1),
     };
     let port = cfg.port;
-    let state: AppState = Arc::new(Inner { ui, cfg, info, slot: Mutex::new(Slot::Free) });
+    let state: AppState = Arc::new(Inner {
+        ui,
+        info,
+        slot: Mutex::new(Slot::Free),
+        inbox: Mutex::new(cfg.inbox),
+        auto_accept: AtomicBool::new(cfg.auto_accept_paired),
+        pairing: Pairing::load(cfg.state.join("paired.json")),
+    });
+    let handle = Handle(state.clone());
 
     let app = Router::new()
         .route(&format!("{API}/info"), get(info_handler))
@@ -165,15 +246,20 @@ pub async fn serve(cfg: Config, identity: Identity, ui: Arc<dyn Ui>) -> Result<(
         .route(&format!("{API}/prepare-upload"), post(prepare_upload))
         .route(&format!("{API}/upload"), post(upload))
         .route(&format!("{API}/cancel"), post(cancel))
+        .route(&format!("{GRASP_API}/pair"), post(pair_handler))
         .layer(DefaultBodyLimit::disable())
         .with_state(state);
 
-    let tls = RustlsConfig::from_pem(identity.cert_pem.into_bytes(), identity.key_pem.into_bytes()).await?;
+    let tls = RustlsConfig::from_config(Arc::new(tls::server_config(&identity)?));
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    axum_server::bind_rustls(addr, tls)
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-        .await?;
-    Ok(())
+    let server = async move {
+        axum_server::bind(addr)
+            .acceptor(PeerCertAcceptor(RustlsAcceptor::new(tls)))
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await?;
+        Ok(())
+    };
+    Ok((handle, server))
 }
 
 fn json_error(status: StatusCode, message: &str) -> Response {
@@ -187,6 +273,31 @@ async fn info_handler(State(s): State<AppState>) -> Json<DeviceInfo> {
 /// Discovery handshake. We answer everyone; nothing is stored until a transfer is accepted.
 async fn register_handler(State(s): State<AppState>, Json(_peer): Json<DeviceInfo>) -> Json<DeviceInfo> {
     Json(s.info.clone())
+}
+
+/// Code pairing. Needs the phone's client certificate: its fingerprint is what gets remembered.
+async fn pair_handler(
+    State(s): State<AppState>,
+    Extension(PeerCert(fp)): Extension<PeerCert>,
+    Json(req): Json<PairReq>,
+) -> Response {
+    let Some(fp) = fp else {
+        return json_error(StatusCode::BAD_REQUEST, "Client certificate required");
+    };
+    let alias = if req.info.alias.trim().is_empty() { "Unknown device".to_string() } else { req.info.alias.clone() };
+    match s.pairing.try_pair(&req.code, &fp, &alias, req.info.device_model.clone()) {
+        PairOutcome::Paired(device) => {
+            s.ui.event(UiEvent::Paired { device });
+            Json(s.info.clone()).into_response()
+        }
+        PairOutcome::NotOpen => json_error(StatusCode::CONFLICT, "Pairing is not open on the PC"),
+        PairOutcome::WrongCode { attempts_left } => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "message": "Wrong code", "attemptsLeft": attempts_left })),
+        )
+            .into_response(),
+        PairOutcome::Locked => json_error(StatusCode::TOO_MANY_REQUESTS, "Too many wrong codes"),
+    }
 }
 
 /// Clears the slot (and dismisses the toast) if prepare-upload is dropped before it finishes,
@@ -214,6 +325,7 @@ impl Drop for PendingGuard {
 async fn prepare_upload(
     State(s): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Extension(PeerCert(fp)): Extension<PeerCert>,
     Json(req): Json<PrepareReq>,
 ) -> Response {
     let files: Vec<&FileDto> = req.files.values().collect();
@@ -259,9 +371,16 @@ async fn prepare_upload(
         files: summaries,
         total,
         message: message.clone(),
+        paired: fp.as_deref().is_some_and(|fp| s.pairing.is_paired(fp)),
     };
 
-    let accepted = tokio::time::timeout(DECISION_TIMEOUT, s.ui.decide(&incoming)).await.unwrap_or(false);
+    // Auto-accept only ever applies to a device paired by code (identified by its client cert).
+    let accepted = if incoming.paired && s.auto_accept.load(Ordering::Relaxed) {
+        s.ui.event(UiEvent::AutoAccepted { request: incoming.clone() });
+        true
+    } else {
+        tokio::time::timeout(DECISION_TIMEOUT, s.ui.decide(&incoming)).await.unwrap_or(false)
+    };
     if !accepted {
         *s.slot.lock().unwrap() = Slot::Free;
         guard.armed = false;
@@ -329,7 +448,9 @@ async fn upload(
         (f.name.clone(), f.sha256.clone(), sess.request_id.clone())
     };
 
-    let tmp = s.cfg.inbox.join(format!(".{file_id}.part"));
+    let inbox = s.inbox.lock().unwrap().clone();
+    let _ = tokio::fs::create_dir_all(&inbox).await;
+    let tmp = inbox.join(format!(".{file_id}.part"));
     let streamed = stream_to_disk(&s, body, &tmp, &request_id).await;
     let actual = match streamed {
         Ok(hash) => hash,
@@ -348,7 +469,7 @@ async fn upload(
         }
     }
 
-    let dest = unique_path(&s.cfg.inbox, &name);
+    let dest = unique_path(&inbox, &name);
     if let Err(e) = tokio::fs::rename(&tmp, &dest).await {
         let _ = tokio::fs::remove_file(&tmp).await;
         s.ui.event(UiEvent::Failed { id: request_id, reason: format!("Couldn't save {name}: {e}") });
@@ -376,7 +497,7 @@ async fn upload(
         s.ui.event(UiEvent::Done {
             id,
             count: saved.len(),
-            dir: s.cfg.inbox.display().to_string(),
+            dir: inbox.display().to_string(),
             first_file: saved.first().map(|p| p.display().to_string()),
         });
     }

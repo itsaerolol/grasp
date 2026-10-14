@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
@@ -21,12 +22,21 @@ pub struct IncomingRequest {
     /// Set when the "file" is really a text message / link. It still needs Accept: nothing from
     /// the network may touch the clipboard or open a browser without a human saying yes.
     pub message: Option<String>,
+    /// The sender presented the client certificate of a device paired by code.
+    pub paired: bool,
 }
 
 /// Everything the shell needs to draw after the Accept / Reject decision.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum UiEvent {
+    /// A paired device's transfer was accepted without a prompt (auto-accept is on). The shell shows
+    /// it as receiving straight away; a message still arrives as `Message` next.
+    #[serde(rename_all = "camelCase")]
+    AutoAccepted { request: IncomingRequest },
+    /// A phone entered the right code.
+    #[serde(rename_all = "camelCase")]
+    Paired { device: crate::pairing::PairedDevice },
     /// A LocalSend "message" the user has just ACCEPTED. The shell may now act on `text`.
     #[serde(rename_all = "camelCase")]
     Message { id: String, from: String, text: String },

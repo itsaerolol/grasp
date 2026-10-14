@@ -37,5 +37,22 @@ check "reject -> 403 surfaced" "! send '$T/photo.jpg' && grep -q 'Rejected' '$T/
 check "rejected text message is refused and never delivered" "! send --text 'sneaky link' && grep -q 'Rejected' '$T/send.log' && ! grep -q 'MESSAGE' '$T/recv.log'"
 stop_recv
 
+# Code pairing + auto-accept for paired devices only. Unpaired senders are rejected (--reject), so
+# anything that gets through below got through because it is paired.
+rm -rf "$T/state" "$T/inbox"
+start_recv --reject --auto-accept-paired --pair-code 427
+FP=$(grep -o 'fingerprint [0-9A-F]\{64\}' "$T/recv.log" | awk '{print $2}')
+check "info advertises code pairing" "send --info && grep -q 'code pairing: supported' '$T/send.log'"
+check "auto-accept does not apply to an unpaired sender" "! send '$T/photo.jpg' && grep -q 'Rejected' '$T/send.log'"
+check "wrong code refused with attempts left" "! send --pair 111 && grep -q 'Wrong code (4 left)' '$T/send.log'"
+check "pairing needs a client cert" "! send --no-client-cert --pair 427 && grep -q 'Client certificate required' '$T/send.log'"
+check "right code pairs" "send --pair 427 && grep -q 'paired with' '$T/send.log' && grep -q 'PAIRED Grasp CLI' '$T/recv.log'"
+check "code is single-use" "! send --pair 427 && grep -q 'not open' '$T/send.log'"
+check "paired sender is auto-accepted" "send '$T/photo.jpg' && grep -q 'AUTO-ACCEPTED' '$T/recv.log' && cmp -s '$T/photo.jpg' '$T/inbox/photo.jpg'"
+check "paired text message is auto-accepted" "send --text 'https://whiteframe.cc' && grep -q 'MESSAGE.*whiteframe' '$T/recv.log'"
+check "same sender without its cert is not trusted" "! send --no-client-cert --text hi && grep -q 'Rejected' '$T/send.log'"
+check "pairing survives a restart" "stop_recv; start_recv --reject --auto-accept-paired; send --text again && grep -q 'AUTO-ACCEPTED' '$T/recv.log'"
+stop_recv
+
 echo "---- $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

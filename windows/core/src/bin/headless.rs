@@ -1,11 +1,12 @@
 //! Headless receiver for the protocol tests: same server as the app, no toast.
 //! Usage: grasp-headless [--port 53318] [--inbox DIR] [--state DIR] [--auto-accept | --reject]
+//!        [--pair-code 123] (open a pairing window with this code)  [--auto-accept-paired]
 //! Without a decision flag it asks on stdin ("Accept? [y/N]"), like tools/mock-receiver.mjs.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use grasp_core::{cert, serve, Config, IncomingRequest, Ui, UiEvent};
+use grasp_core::{build, cert, Config, IncomingRequest, Ui, UiEvent};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 enum Mode {
@@ -20,7 +21,7 @@ struct HeadlessUi(Mode);
 impl Ui for HeadlessUi {
     async fn decide(&self, req: &IncomingRequest) -> bool {
         let list: Vec<String> = req.files.iter().map(|f| format!("{} {}B {}", f.name, f.size, f.mime)).collect();
-        println!("prepare-upload from {}: {}", req.from, list.join(", "));
+        println!("prepare-upload from {}{}: {}", req.from, if req.paired { " (paired)" } else { "" }, list.join(", "));
         match self.0 {
             Mode::Accept => true,
             Mode::Reject => false,
@@ -40,6 +41,8 @@ impl Ui for HeadlessUi {
             UiEvent::Done { count, dir, .. } => println!("session complete: {count} file(s) in {dir}"),
             UiEvent::Cancelled { .. } => println!("cancelled by sender"),
             UiEvent::Failed { reason, .. } => println!("FAILED {reason}"),
+            UiEvent::AutoAccepted { request } => println!("AUTO-ACCEPTED from paired {}", request.from),
+            UiEvent::Paired { device } => println!("PAIRED {} {}", device.alias, device.fingerprint),
         }
     }
 }
@@ -65,5 +68,17 @@ async fn main() -> anyhow::Result<()> {
     let identity = cert::load_or_create(&state)?;
     println!("Grasp headless receiver on https://0.0.0.0:{port}");
     println!("server cert fingerprint {}", identity.fingerprint);
-    serve(Config { port, inbox, alias: "Grasp PC (headless)".into() }, identity, Arc::new(HeadlessUi(mode))).await
+    let cfg = Config {
+        port,
+        inbox,
+        alias: "Grasp PC (headless)".into(),
+        state,
+        auto_accept_paired: flag("--auto-accept-paired"),
+    };
+    let (handle, server) = build(cfg, identity, Arc::new(HeadlessUi(mode)))?;
+    if args.iter().any(|a| a == "--pair-code") {
+        let w = handle.start_pairing_with(&opt("--pair-code", "000"), Duration::from_secs(3600));
+        println!("pairing open, code {}", w.code);
+    }
+    server.await
 }
