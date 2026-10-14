@@ -24,7 +24,7 @@ enum PayloadBuilder {
         // Images first (Photos app). Prefer the original representation so we control conversion.
         if p.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
             let url = try await copyFile(p, type: .image, workDir: workDir)
-            return try convertIfHEIC(url)
+            return try convertToJPGIfNeeded(url)
         }
         // Web links -> text message (lands as a copyable popup on the PC).
         if p.hasItemConformingToTypeIdentifier(UTType.url.identifier),
@@ -93,13 +93,16 @@ enum PayloadBuilder {
         return ns.pathExtension.lowercased() == "jpeg" ? ns.deletingPathExtension + ".jpg" : name
     }
 
-    /// HEIC/HEIF -> JPEG via ImageIO, preserving orientation + EXIF. Decision: always convert for Windows.
-    static func convertIfHEIC(_ url: URL) throws -> OutgoingItem {
+    /// HEIC/HEIF and still WebP -> JPEG via ImageIO, preserving orientation + EXIF. Decision: photos always
+    /// arrive on Windows as JPG. Animated WebP is left alone (a JPG would keep only the first frame).
+    static func convertToJPGIfNeeded(_ url: URL) throws -> OutgoingItem {
         let type = UTType(filenameExtension: url.pathExtension)
-        guard let type, type.conforms(to: .heic) || type.conforms(to: .heif) else { return fileItem(url) }
+        guard let type, type.conforms(to: .heic) || type.conforms(to: .heif) || type.conforms(to: .webP)
+        else { return fileItem(url) }
 
         let out = url.deletingPathExtension().appendingPathExtension("jpg")
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              CGImageSourceGetCount(src) == 1,
               let dst = CGImageDestinationCreateWithURL(out as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
         else { return fileItem(url) }
         var props = (CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]) ?? [:]

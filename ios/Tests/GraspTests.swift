@@ -36,7 +36,7 @@ final class ConvertIfHEICTests: XCTestCase {
 
     func testHEICBecomesJPGAndOriginalIsRemoved() throws {
         let heic = try fixture(as: "IMG_0001.HEIC")
-        guard case .file(let url, let name, let mime, let size) = try PayloadBuilder.convertIfHEIC(heic) else {
+        guard case .file(let url, let name, let mime, let size) = try PayloadBuilder.convertToJPGIfNeeded(heic) else {
             return XCTFail("expected a file item")
         }
         XCTAssertEqual(name, "IMG_0001.jpg")
@@ -53,18 +53,41 @@ final class ConvertIfHEICTests: XCTestCase {
 
     func testLowercaseHEICExtensionAlsoConverts() throws {
         let heic = try fixture(as: "photo.heic")
-        guard case .file(_, let name, _, _) = try PayloadBuilder.convertIfHEIC(heic) else { return XCTFail() }
+        guard case .file(_, let name, _, _) = try PayloadBuilder.convertToJPGIfNeeded(heic) else { return XCTFail() }
         XCTAssertEqual(name, "photo.jpg")
     }
 
     func testNonHEICPassesThroughUntouched() throws {
         let pdf = dir.appendingPathComponent("Report.pdf")
         try Data("%PDF-1.1".utf8).write(to: pdf)
-        guard case .file(let url, let name, let mime, let size) = try PayloadBuilder.convertIfHEIC(pdf) else { return XCTFail() }
+        guard case .file(let url, let name, let mime, let size) = try PayloadBuilder.convertToJPGIfNeeded(pdf) else { return XCTFail() }
         XCTAssertEqual(url, pdf)
         XCTAssertEqual(name, "Report.pdf")
         XCTAssertEqual(mime, "application/pdf")
         XCTAssertEqual(size, 8)
+    }
+
+    private func fixture(_ resource: String, _ ext: String, as name: String) throws -> URL {
+        let src = try XCTUnwrap(Bundle(for: Self.self).url(forResource: resource, withExtension: ext))
+        let dest = dir.appendingPathComponent(name)
+        try FileManager.default.copyItem(at: src, to: dest)
+        return dest
+    }
+
+    func testStillWebPBecomesJPG() throws {
+        let webp = try fixture("sample", "webp", as: "Photo 2026-10-14 01.30.12.webp")
+        guard case .file(let url, let name, let mime, _) = try PayloadBuilder.convertToJPGIfNeeded(webp) else { return XCTFail() }
+        XCTAssertEqual(name, "Photo 2026-10-14 01.30.12.jpg")
+        XCTAssertEqual(mime, "image/jpeg")
+        XCTAssertEqual(Array(try Data(contentsOf: url).prefix(2)), [0xFF, 0xD8])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: webp.path))
+    }
+
+    func testAnimatedWebPIsLeftAlone() throws {
+        let webp = try fixture("animated", "webp", as: "sticker.webp")
+        guard case .file(let url, let name, _, _) = try PayloadBuilder.convertToJPGIfNeeded(webp) else { return XCTFail() }
+        XCTAssertEqual(name, "sticker.webp", "a JPG would keep only the first frame")
+        XCTAssertEqual(url, webp)
     }
 
     func testJpegExtensionIsNormalizedToJpg() {
