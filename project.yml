@@ -42,6 +42,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: Grasp
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: Grasp finds and sends files to your PC on this network.
         NSUserActivityTypes:
@@ -70,6 +72,8 @@ targets:
       path: ShareExtension/Info.plist
       properties:
         CFBundleDisplayName: Grasp
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSLocalNetworkUsageDescription: Grasp sends shared items to your PC on this network.
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
