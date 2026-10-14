@@ -75,7 +75,11 @@ enum Discovery {
             guard let addr = ifa.ifa_addr, let mask = ifa.ifa_netmask,
                   addr.pointee.sa_family == UInt8(AF_INET), String(cString: ifa.ifa_name) == "en0" else { continue }
             let ip = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
-            let m = mask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+            // BSD trims trailing zero bytes from netmask sockaddrs: only the first sa_len bytes are valid.
+            let valid = Int(mask.pointee.sa_len)
+            let raw = UnsafeRawPointer(mask)
+            var m: UInt32 = 0
+            for i in 0..<4 { m = m << 8 | (4 + i < valid ? UInt32(raw.load(fromByteOffset: 4 + i, as: UInt8.self)) : 0) }
             return (ip, m)
         }
         return nil
