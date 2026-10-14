@@ -19,7 +19,15 @@ final class SendEngine: ObservableObject {
     private var task: Task<Void, Never>?
 
     func start(providers: [NSItemProvider], targetPeerId: String?, workDir: URL) {
+        #if DEBUG
+        let probe = MemoryProbe.start(items: providers.count)
+        task = Task {
+            await run(providers: providers, targetPeerId: targetPeerId, workDir: workDir)
+            probe.finish(phase: "\(phase)")
+        }
+        #else
         task = Task { await run(providers: providers, targetPeerId: targetPeerId, workDir: workDir) }
+        #endif
     }
 
     func cancel() {
@@ -119,3 +127,47 @@ final class SendEngine: ObservableObject {
         return items.count == 1 ? "Sent 1 item" : "Sent \(items.count) items"
     }
 }
+
+#if DEBUG
+/// Debug-only: samples the extension's footprint during a share and stores the peak in the App Group
+/// defaults (key "debug.lastShare"), so it can be read off a device over USB. Not in Release builds.
+final class MemoryProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var peak: UInt64 = 0
+    private var timer: DispatchSourceTimer?
+    private let items: Int
+    private let began = Date()
+
+    private init(items: Int) { self.items = items }
+
+    static func start(items: Int) -> MemoryProbe {
+        let p = MemoryProbe(items: items)
+        let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        t.schedule(deadline: .now(), repeating: .milliseconds(100))
+        t.setEventHandler { [weak p] in p?.sample() }
+        p.timer = t
+        t.resume()
+        return p
+    }
+
+    private func sample() {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        guard kr == KERN_SUCCESS else { return }
+        lock.withLock { peak = max(peak, info.phys_footprint) }
+    }
+
+    func finish(phase: String) {
+        sample()
+        timer?.cancel()
+        let mb = lock.withLock { Double(peak) / 1_048_576 }
+        AppConfig.defaults.set([
+            "peakMB": (mb * 10).rounded() / 10, "items": items, "phase": phase,
+            "seconds": Date().timeIntervalSince(began).rounded(), "at": Date().description,
+        ], forKey: "debug.lastShare")
+    }
+}
+#endif
