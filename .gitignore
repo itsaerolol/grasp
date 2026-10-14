@@ -1,0 +1,13 @@
+*.xcodeproj/
+DerivedData/
+build/
+.DS_Store
+xcuserdata/
+tools/.mock-server-cert/
+tools/.client-cert/
+mock-inbox/
+desktop/target/
+desktop/node_modules/
+desktop/src-tauri/gen/
+headless-inbox/
+headless-state/

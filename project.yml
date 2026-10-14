@@ -1,0 +1,89 @@
+name: Grasp
+options:
+  bundleIdPrefix: com.itsaerolol
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+
+packages:
+  swift-certificates:
+    url: https://github.com/apple/swift-certificates
+    from: 1.6.0
+  swift-crypto:
+    url: https://github.com/apple/swift-crypto
+    from: 3.10.0
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  Grasp:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - Shared
+    dependencies:
+      - target: GraspShare
+      - package: swift-certificates
+        product: X509
+      - package: swift-crypto
+        product: _CryptoExtras
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.itsaerolol.grasp
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Grasp
+        UILaunchScreen: {}
+        NSLocalNetworkUsageDescription: Grasp finds and sends files to your PC on this network.
+        NSUserActivityTypes:
+          - INSendMessageIntent
+    entitlements:
+      path: App/Grasp.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.itsaerolol.grasp
+
+  GraspShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - ShareExtension
+      - Shared
+    dependencies:
+      - package: swift-certificates
+        product: X509
+      - package: swift-crypto
+        product: _CryptoExtras
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.itsaerolol.grasp.share
+    info:
+      path: ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Grasp
+        NSLocalNetworkUsageDescription: Grasp sends shared items to your PC on this network.
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            IntentsSupported:
+              - INSendMessageIntent
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 50
+              NSExtensionActivationSupportsFileWithMaxCount: 50
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsText: true
+    entitlements:
+      path: ShareExtension/GraspShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.itsaerolol.grasp

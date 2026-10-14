@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Proves Grasp for Windows' receiver (desktop/core, headless build) against the reference sender.
+# Run from anywhere: bash tools/test-e2e-desktop.sh
+# Differences from test-e2e.sh (mock): our receiver does not request a client cert, so there is
+# no "no cert refused" case, and it has no PIN support.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+T=$(mktemp -d); PORT=53398; PASS=0; FAIL=0
+cleanup() { kill "${RECV:-}" 2>/dev/null || true; rm -rf "$T"; }
+trap cleanup EXIT
+
+cargo build --quiet --manifest-path desktop/Cargo.toml -p grasp-core --bin grasp-headless
+BIN=desktop/target/debug/grasp-headless
+[ -f "$BIN.exe" ] && BIN="$BIN.exe"
+
+start_recv() { "$BIN" --port $PORT --inbox "$T/inbox" --state "$T/state" "$@" > "$T/recv.log" 2>&1 & RECV=$!; sleep 1.2; }
+stop_recv() { kill "$RECV" 2>/dev/null || true; wait "$RECV" 2>/dev/null || true; }
+check() { if eval "$2"; then echo "PASS  $1"; PASS=$((PASS+1)); else echo "FAIL  $1"; FAIL=$((FAIL+1)); cat "$T/recv.log"; fi; }
+send() { node tools/ls-send.mjs --host 127.0.0.1 --port $PORT "$@" > "$T/send.log" 2>&1; }
+
+head -c 3000000 /dev/urandom > "$T/photo.jpg"; echo "hello grasp" > "$T/note.pdf"
+
+start_recv --auto-accept
+FP=$(grep -o 'fingerprint [0-9A-F]\{64\}' "$T/recv.log" | awk '{print $2}')
+check "files upload + sha256 verified" "send '$T/photo.jpg' '$T/note.pdf' && cmp -s '$T/photo.jpg' '$T/inbox/photo.jpg' && cmp -s '$T/note.pdf' '$T/inbox/note.pdf'"
+check "same name again -> saved as 'photo (2).jpg', original untouched" "send '$T/photo.jpg' && cmp -s '$T/photo.jpg' '$T/inbox/photo (2).jpg' && cmp -s '$T/photo.jpg' '$T/inbox/photo.jpg'"
+check "text message -> 204, no upload" "send --text 'https://whiteframe.cc' && grep -q '204' '$T/send.log' && grep -q 'MESSAGE.*whiteframe' '$T/recv.log'"
+check "pinned fingerprint accepted" "send --pin-fp $FP --info"
+check "wrong pinned fingerprint refused" "! send --pin-fp $(printf 'A%.0s' {1..64}) --info"
+check "client cert optional (works without one)" "send --no-client-cert --text hi"
+check "no leftover .part files" "! ls -a '$T/inbox' | grep -q '\.part$'"
+check "cert fingerprint is stable across restarts" "stop_recv; start_recv --auto-accept; grep -q \"fingerprint $FP\" '$T/recv.log'"
+stop_recv
+
+start_recv --reject
+check "reject -> 403 surfaced" "! send '$T/photo.jpg' && grep -q 'Rejected' '$T/send.log'"
+check "rejected text message is refused and never delivered" "! send --text 'sneaky link' && grep -q 'Rejected' '$T/send.log' && ! grep -q 'MESSAGE' '$T/recv.log'"
+stop_recv
+
+echo "---- $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

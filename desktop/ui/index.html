@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grasp</title>
+<style>
+  /* Always dark, regardless of the Windows theme. */
+  :root {
+    color-scheme: dark;
+    --card: rgba(38, 38, 40, 0.97);
+    --border: rgba(255, 255, 255, 0.1);
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --fill: rgba(235, 235, 245, 0.16);
+    --fill-hover: rgba(235, 235, 245, 0.26);
+    --track: rgba(235, 235, 245, 0.18);
+    --accent: #0a84ff;
+    --accent-hover: #2b95ff;
+    --reject: #8f3a36;         /* muted red: clearly "no", not alarming */
+    --reject-hover: #a24742;
+    --ok: #30d158;
+    --bad: #ff6a61;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: transparent; overflow: hidden; }
+  body {
+    font: 14px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+    -webkit-user-select: none; user-select: none; cursor: default;
+  }
+  /* The transparent margin around the card holds its shadow. It must be at least as big as the
+     shadow, or the window edge slices the shadow off and leaves a visible dark rectangle.
+     Shadow reach: 16px sides, ~10px top, ~22px bottom. */
+  .stage { padding: 14px 22px 30px 22px; }
+
+  #card {
+    width: 360px;
+    padding: 14px 16px 16px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.30), 0 1px 3px rgba(0, 0, 0, 0.30);
+    transform: translateX(calc(100% + 48px));
+    opacity: 0;
+    transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1), opacity 220ms ease-out;
+  }
+  #card.in { transform: translateX(0); opacity: 1; }
+  #card.out {
+    transform: translateX(calc(100% + 48px)); opacity: 0;
+    transition: transform 280ms cubic-bezier(0.5, 0, 0.9, 0.4), opacity 240ms ease-in;
+  }
+  #card.clickable { cursor: pointer; }
+
+  .row { display: flex; align-items: center; gap: 12px; }
+  .glyph { flex: none; width: 40px; height: 40px; display: grid; place-items: center; }
+  .glyph svg { width: 40px; height: 40px; display: block; }
+  .text { min-width: 0; flex: 1; }
+  .title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub.wrap { white-space: normal; }
+
+  .actions { display: flex; gap: 8px; margin-top: 14px; }
+  button {
+    flex: 1; height: 34px; border: 0; border-radius: 17px;
+    font: inherit; font-size: 14px; font-weight: 600; color: var(--text);
+    background: var(--fill); cursor: pointer;
+    transition: background 120ms, transform 120ms;
+  }
+  button:hover { background: var(--fill-hover); }
+  button:active { transform: scale(0.97); }
+  button.primary { background: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-hover); }
+  button.reject { background: var(--reject); color: #fff; }
+  button.reject:hover { background: var(--reject-hover); }
+
+  .bar { height: 6px; margin-top: 14px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0%; border-radius: 3px; background: var(--accent); transition: width 140ms linear; }
+  .bar.indeterminate > i { width: 35%; animation: slide 1.1s ease-in-out infinite; }
+  .meta { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+
+  .message {
+    margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: var(--fill);
+    font-size: 14px; max-height: 5.6em; overflow: hidden; word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+  }
+
+  .check circle { fill: var(--ok); }
+  /* pathLength="1" normalises the path, so the dash always spans exactly the whole stroke. */
+  .check path { fill: none; stroke: #fff; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round;
+    stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw 380ms 120ms ease-out forwards; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .warn circle { fill: var(--bad); }
+
+  @media (prefers-reduced-motion: reduce) {
+    #card, #card.out { transition: opacity 150ms linear; transform: none; }
+    .bar.indeterminate > i { animation: none; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="stage"><div id="card" role="alert" aria-live="polite"></div></div>
+
+<script>
+'use strict';
+const { listen } = window.__TAURI__.event;
+const { invoke } = window.__TAURI__.core;
+const card = document.getElementById('card');
+
+let current = null;      // what the card is showing: { kind, id, ... }
+let queue = [];          // things that arrived while the card was busy
+let timer = null;
+let leaving = false;
+
+const APP_ICON = `<svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3aa8ff"/><stop offset="1" stop-color="#0a5cff"/></linearGradient></defs><rect x="3" y="3" width="94" height="94" rx="22" fill="url(#g)"/><rect x="46" y="22" width="8" height="30" rx="3" fill="#fff"/><polygon points="33,48 67,48 50,68" fill="#fff" stroke="#fff" stroke-width="4" stroke-linejoin="round"/><path d="M30 64v13h40V64" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const CHECK = `<svg class="check" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="46"/><path pathLength="1" d="M29 52l15 15 28-32"/></svg>`;
+const WARN = `<svg class="warn" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="46"/><path d="M50 28v28M50 70v2" stroke="#fff" stroke-width="7" stroke-linecap="round" fill="none"/></svg>`;
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function fmtSize(bytes) {
+  if (bytes < 1000) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = bytes, i = -1;
+  do { v /= 1000; i++; } while (v >= 1000 && i < units.length - 1);
+  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1).replace(/\.0$/, '')} ${units[i]}`;
+}
+
+function summarize(files, total) {
+  const n = files.length;
+  const allImages = files.every((f) => (f.mime || '').startsWith('image/'));
+  const what = allImages ? `${n} ${n === 1 ? 'photo' : 'photos'}` : n === 1 ? files[0].name : `${n} files`;
+  return `${what} · ${fmtSize(total)}`;
+}
+
+// iOS hides the phone's custom name, so "iPhone" is the honest label. Other senders keep their alias.
+const who = (req) => (req.deviceModel === 'iPhone' || req.deviceModel === 'iPad' ? req.deviceModel : req.from);
+
+const pctOf = (received, total) => (total ? Math.min(100, Math.floor((received / total) * 100)) : 0);
+const sizeLine = (received, total) => (received ? `${fmtSize(received)} of ${fmtSize(total)}` : fmtSize(total));
+
+function markup() {
+  const c = current;
+  switch (c.kind) {
+    case 'incoming': {
+      const msg = c.req.message != null;
+      const actions = c.accepted ? '' :
+        `<div class="actions"><button id="reject" class="reject">Reject</button><button id="accept" class="primary">Accept</button></div>`;
+      return `<div class="row"><div class="glyph">${APP_ICON}</div><div class="text">
+          <div class="title">${esc(who(c.req))}</div>
+          <div class="sub">${msg ? 'Wants to send you a message' : esc(summarize(c.req.files, c.req.total))}</div></div></div>
+        ${msg ? `<div class="message">${esc(c.req.message)}</div>` : ''}${actions}`;
+    }
+    case 'receiving': {
+      const pct = pctOf(c.received, c.total);
+      return `<div class="row"><div class="glyph">${APP_ICON}</div><div class="text">
+          <div class="title">${esc(who(c.req))}</div><div class="sub">Receiving…</div></div></div>
+        <div class="bar ${c.received ? '' : 'indeterminate'}" id="bar"><i style="width:${pct}%"></i></div>
+        <div class="meta"><span id="sz">${sizeLine(c.received, c.total)}</span><span id="pct">${pct}%</span></div>`;
+    }
+    case 'done':
+      return `<div class="row"><div class="glyph">${CHECK}</div><div class="text">
+          <div class="title">Received</div><div class="sub">${esc(c.summary)}</div></div></div>`;
+    case 'copied':
+      return `<div class="row"><div class="glyph">${CHECK}</div><div class="text">
+          <div class="title">${c.copied ? 'Copied' : 'Couldn’t copy'}${c.opened ? ' · Opened in browser' : ''}</div></div></div>
+        <div class="message">${esc(c.text)}</div>`;
+    case 'failed':
+      return `<div class="row"><div class="glyph">${WARN}</div><div class="text">
+          <div class="title">Couldn’t receive</div><div class="sub wrap">${esc(c.reason)}</div></div></div>`;
+  }
+}
+
+function render() {
+  card.innerHTML = markup();
+  card.onclick = null; // only the finished state sets one (after render)
+  card.classList.toggle('clickable', current.kind === 'done');
+  wire();
+  // The window is transparent and sized to the card, so it never blocks clicks beneath it.
+  invoke('toast_resize', { height: document.querySelector('.stage').offsetHeight });
+}
+
+function wire() {
+  const c = current;
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  on('accept', () => {
+    invoke('respond', { id: c.id, accept: true });
+    // A message is delivered instantly (the 'accepted-message' event replaces this card);
+    // files start streaming and get a progress bar.
+    current = c.req.message != null
+      ? { ...c, accepted: true }
+      : { kind: 'receiving', id: c.id, req: c.req, received: 0, total: c.req.total };
+    render();
+  });
+  on('reject', () => { invoke('respond', { id: c.id, accept: false }); dismiss(); });
+}
+
+function autoDismiss(ms) {
+  clearTimeout(timer);
+  timer = setTimeout(dismiss, ms);
+}
+
+async function present(item) {
+  current = item;
+  leaving = false;
+  card.classList.remove('out');
+  render();
+  await invoke('toast_show');
+  requestAnimationFrame(() => requestAnimationFrame(() => card.classList.add('in')));
+  card.onmouseenter = card.onmouseleave = null;
+  if (item.kind === 'failed') autoDismiss(6000);
+}
+
+function dismiss() {
+  if (!current || leaving) return;
+  leaving = true;
+  clearTimeout(timer);
+  card.classList.remove('in');
+  card.classList.add('out');
+  setTimeout(async () => {
+    await invoke('toast_hidden');
+    current = null;
+    leaving = false;
+    card.classList.remove('out');
+    const next = queue.shift();
+    if (next) present(next);
+  }, 300);
+}
+
+// Something new wants the card. Transfers cut in front of passive toasts; passive toasts wait for transfers.
+function show(item) {
+  const passive = (k) => k === 'copied' || k === 'done' || k === 'failed';
+  if (!current && !leaving) return present(item);
+  if (leaving) return queue.push(item);
+  if (item.kind === 'incoming' && passive(current.kind)) {
+    clearTimeout(timer);
+    current = item;
+    render();
+    return;
+  }
+  queue.push(item);
+}
+
+listen('incoming', ({ payload }) => show({ kind: 'incoming', id: payload.id, req: payload }));
+
+// A message the user accepted: the shell has already copied it (and opened it, if it was a web link).
+listen('accepted-message', ({ payload: p }) => {
+  if (!current || current.id !== p.id || !current.req) return;
+  current = { kind: 'copied', id: p.id, text: current.req.message, copied: p.copied, opened: p.opened };
+  render();
+  card.onmouseenter = () => clearTimeout(timer);
+  card.onmouseleave = () => autoDismiss(3000);
+  autoDismiss(12000);
+});
+
+listen('ui', ({ payload: p }) => {
+  switch (p.type) {
+    case 'progress':
+      if (current && current.id === p.id && (current.kind === 'receiving' || current.kind === 'incoming')) {
+        const wasIdle = current.kind !== 'receiving' || !current.received;
+        if (current.kind === 'incoming') current = { kind: 'receiving', id: p.id, req: current.req };
+        current.received = p.received; current.total = p.total;
+        if (wasIdle) return render();
+        const bar = document.querySelector('#bar > i'), pct = document.getElementById('pct'), sz = document.getElementById('sz');
+        if (bar) bar.style.width = pctOf(p.received, p.total) + '%';
+        if (pct) pct.textContent = pctOf(p.received, p.total) + '%';
+        if (sz) sz.textContent = sizeLine(p.received, p.total);
+      }
+      break;
+    case 'done':
+      if (current && current.id === p.id) {
+        const req = current.req;
+        current = { kind: 'done', id: p.id, summary: req ? summarize(req.files, req.total) : `${p.count} files`, reveal: p.firstFile || p.dir };
+        render();
+        card.onclick = () => { invoke('reveal', { path: current.reveal }); dismiss(); };
+        card.onmouseenter = () => clearTimeout(timer);
+        card.onmouseleave = () => autoDismiss(1800);
+        autoDismiss(3800);
+      }
+      break;
+    case 'cancelled':
+      queue = queue.filter((q) => q.id !== p.id);
+      if (current && current.id === p.id) dismiss();
+      break;
+    case 'failed':
+      queue = queue.filter((q) => q.id !== p.id);
+      if (current && current.id === p.id) {
+        current = { kind: 'failed', id: p.id, reason: p.reason };
+        render();
+        autoDismiss(6000);
+      } else {
+        show({ kind: 'failed', id: p.id, reason: p.reason });
+      }
+      break;
+  }
+});
+</script>
+</body>
+</html>

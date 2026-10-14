@@ -1,0 +1,14 @@
+{
+  "name": "grasp-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Grasp for Windows: a tray-only LocalSend receiver with a toast UI.",
+  "scripts": {
+    "icons": "node scripts/make-icons.mjs",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
