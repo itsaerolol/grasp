@@ -18,6 +18,10 @@ final class PairingModel: ObservableObject {
     @Published var adding = false
     @Published var manualError: String?
     @Published var toast: Toast?
+    /// A Grasp for Windows PC waiting for its 3-digit code.
+    @Published var codeTarget: Discovery.Found?
+    @Published var codeError: String?
+    @Published var checkingCode = false
     private var toastTask: Task<Void, Never>?
 
     func boot() async {
@@ -56,7 +60,30 @@ final class PairingModel: ObservableObject {
         return false
     }
 
+    /// Grasp for Windows pairs by a code shown on the PC; stock LocalSend is trusted on first use.
     func pair(_ f: Discovery.Found) {
+        if f.info.supportsCodePairing { codeError = nil; codeTarget = f } else { save(f) }
+    }
+
+    /// Returns true when the PC accepted the code.
+    func submitCode(_ code: String, for f: Discovery.Found) async -> Bool {
+        guard let me else { return false }
+        checkingCode = true; codeError = nil
+        defer { checkingCode = false }
+        do {
+            _ = try await LSClient(host: f.host, expectedFingerprint: f.certFingerprint, me: me, connectTimeout: 4)
+                .pair(code: code)
+            codeTarget = nil
+            save(f)
+            return true
+        } catch {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            codeError = error.localizedDescription
+            return false
+        }
+    }
+
+    private func save(_ f: Discovery.Found) {
         let peer = Peer(alias: f.info.alias, host: f.host, port: LS.port, certFingerprint: f.certFingerprint,
                         deviceModel: f.info.deviceModel, pin: nil, lastSeen: Date())
         // One default PC (locked decision): pairing a different PC replaces the old one.
@@ -146,6 +173,11 @@ struct PairingView: View {
             .animation(.snappy, value: model.paired)
         }
         .sheet(isPresented: $showFinder) { FinderSheet(model: model, showManual: $showManual) }
+        .sheet(item: Binding(get: { showFinder || showManual ? nil : model.codeTarget },
+                             set: { model.codeTarget = $0 })) { target in
+            NavigationStack { CodeEntryView(model: model, target: target, standalone: true) }
+                .presentationDetents([.medium])
+        }
         .sheet(isPresented: $showManual) { ManualIPSheet(model: model) }
         .task { await model.boot() }
         .onChange(of: scenePhase) { _, phase in
@@ -327,6 +359,7 @@ private struct FinderSheet: View {
     var body: some View {
         NavigationStack {
             List { FindPCSection(model: model, showManual: $showManual, excludePaired: true) }
+                .navigationDestination(item: $model.codeTarget) { CodeEntryView(model: model, target: $0) }
                 .navigationTitle("Pair a different PC")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
@@ -365,6 +398,7 @@ private struct ManualIPSheet: View {
             }
             .navigationTitle("Add PC")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(item: $model.codeTarget) { CodeEntryView(model: model, target: $0) }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -372,7 +406,7 @@ private struct ManualIPSheet: View {
                 }
             }
         }
-        .presentationDetents([.height(260)])
+        .presentationDetents(model.codeTarget == nil ? [.height(260)] : [.medium])
         .onAppear { focused = true; model.manualError = nil }
     }
 
@@ -380,7 +414,84 @@ private struct ManualIPSheet: View {
         guard canAdd else { return }
         focused = false
         Task {
-            if await model.addManual(host) { dismiss() } else { focused = true }
+            // A Grasp for Windows PC pushes the code step instead; the sheet closes once paired.
+            if await model.addManual(host) { if model.codeTarget == nil { dismiss() } } else { focused = true }
+        }
+    }
+}
+
+/// Three digit boxes over a hidden number field; submits on the third digit.
+private struct CodeEntryView: View {
+    @ObservedObject var model: PairingModel
+    let target: Discovery.Found
+    var standalone = false
+    @Environment(\.dismiss) private var dismiss
+    @State private var code = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(spacing: 20) {
+            ZStack {
+                TextField("", text: $code)
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+                    .focused($focused)
+                    .tint(.clear)          // no stray caret beside the boxes
+                    .opacity(0.02)
+                    .accessibilityLabel("Code")
+                HStack(spacing: 12) {
+                    ForEach(0..<3, id: \.self) { i in
+                        Text(digit(i))
+                            .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
+                            .frame(width: 64, height: 76)
+                            .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(focused && i == min(code.count, 2) ? Color.accentColor : .clear, lineWidth: 2))
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { focused = true }
+
+            ZStack {
+                if model.checkingCode {
+                    ProgressView()
+                } else if let error = model.codeError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
+                }
+            }
+            .frame(minHeight: 44)
+            Spacer()
+        }
+        .padding(.top, 28)
+        .padding(.horizontal, 24)
+        .navigationTitle("Code on \(target.info.alias)")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if standalone {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { model.codeTarget = nil; dismiss() } }
+            }
+        }
+        .onAppear { model.codeError = nil; focused = true }
+        .onChange(of: code) { _, new in
+            let digits = String(new.filter(\.isNumber).prefix(3))
+            if digits != new { code = digits; return }
+            if digits.count == 3 && !model.checkingCode { submit(digits) }
+        }
+    }
+
+    private func digit(_ i: Int) -> String {
+        i < code.count ? String(code[code.index(code.startIndex, offsetBy: i)]) : ""
+    }
+
+    private func submit(_ digits: String) {
+        Task {
+            if await model.submitCode(digits, for: target) { return }
+            code = ""
+            try? await Task.sleep(for: .milliseconds(100))
+            focused = true
         }
     }
 }

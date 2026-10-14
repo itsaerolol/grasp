@@ -4,7 +4,8 @@ import Darwin
 /// Discovery without the multicast entitlement: LocalSend's "HTTP legacy" mode
 /// (POST /register to every host on the /24). Needs only the Local Network permission.
 enum Discovery {
-    struct Found: Hashable, Sendable {
+    struct Found: Hashable, Sendable, Identifiable {
+        var id: String { certFingerprint }
         let host: String
         let info: LSDeviceInfo
         let certFingerprint: String

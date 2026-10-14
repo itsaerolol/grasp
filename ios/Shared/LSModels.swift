@@ -6,6 +6,8 @@ enum LS {
     static let port = 53317
     static let version = "2.2"
     static let api = "/api/localsend/v2"
+    /// Grasp for Windows extension: code pairing. Advertised as `grasp: 1` in /info and /register.
+    static let graspApi = "/api/grasp/v1"
 }
 
 /// Used for /register request+response, /info response, and prepare-upload `info`.
@@ -20,6 +22,10 @@ struct LSDeviceInfo: Codable, Equatable, Sendable {
     var port: Int?
     var `protocol`: String?
     var download: Bool?
+    /// Set by Grasp for Windows: it pairs by a 3-digit code shown on the PC.
+    var grasp: Int?
+
+    var supportsCodePairing: Bool { (grasp ?? 0) >= 1 }
 }
 
 struct LSFileDTO: Codable, Sendable {
@@ -56,6 +62,9 @@ enum LSError: LocalizedError {
     case checksumMismatch
     case badStatus(Int, String)
     case noClientIdentity
+    case pairingNotOpen
+    case wrongCode(attemptsLeft: Int?)
+    case pairingLocked
 
     var errorDescription: String? {
         switch self {
@@ -70,6 +79,22 @@ enum LSError: LocalizedError {
         case .checksumMismatch: return "File got corrupted in transit. Try again."
         case .badStatus(let code, let body): return "PC returned \(code). \(body)"
         case .noClientIdentity: return "Open the Grasp app once to set up this phone."
+        case .pairingNotOpen: return "Choose Pair iPhone in Grasp's menu on the PC, then enter its code."
+        case .wrongCode(let left):
+            return left.map { "Wrong code. \($0) \($0 == 1 ? "try" : "tries") left." } ?? "Wrong code."
+        case .pairingLocked: return "Too many wrong codes. Choose Pair iPhone on the PC again."
+        }
+    }
+
+    /// Status mapping for POST /api/grasp/v1/pair (same codes as windows/core and the mock).
+    static func fromPairing(status: Int, body: Data) -> LSError {
+        switch status {
+        case 401:
+            let left = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["attemptsLeft"] as? Int
+            return .wrongCode(attemptsLeft: left)
+        case 409: return .pairingNotOpen
+        case 429: return .pairingLocked
+        default: return .badStatus(status, String(data: body, encoding: .utf8) ?? "")
         }
     }
 

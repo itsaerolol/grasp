@@ -35,9 +35,9 @@ final class LSClient: @unchecked Sendable {
     /// Server cert fingerprint seen during the last TLS handshake with this host.
     var serverFingerprint: String? { delegate.observedFingerprint(host: host) }
 
-    private func url(_ path: String, _ query: [String: String] = [:]) -> URL {
+    private func url(_ path: String, _ query: [String: String] = [:], base: String = LS.api) -> URL {
         var c = URLComponents()
-        c.scheme = "https"; c.host = host; c.port = port; c.path = LS.api + path
+        c.scheme = "https"; c.host = host; c.port = port; c.path = base + path
         if !query.isEmpty { c.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         return c.url!
     }
@@ -53,6 +53,7 @@ final class LSClient: @unchecked Sendable {
         // HTTP 403 (declined / unanswered prompt) as -1206 instead of delivering the response.
         // A real client-cert TLS failure surfaces as a secure-connection error, not this one.
         if let e = error as? URLError, e.code == .clientCertificateRequired { return LSError.rejected }
+        if error is LSError { return error }
         if error is URLError, let expected = expectedFingerprint,
            let seen = serverFingerprint, seen != expected {
             return LSError.fingerprintMismatch(expected: expected, got: seen)
@@ -72,6 +73,21 @@ final class LSClient: @unchecked Sendable {
         do {
             let (data, resp) = try await session.data(for: req)
             _ = try check(resp, data)
+            return try JSONDecoder().decode(LSDeviceInfo.self, from: data)
+        } catch { throw mapTransport(error) }
+    }
+
+    /// Grasp for Windows code pairing. Our client cert is what the PC remembers.
+    func pair(code: String) async throws -> LSDeviceInfo {
+        struct Body: Encodable { let code: String; let info: LSDeviceInfo }
+        var req = URLRequest(url: url("/pair", base: LS.graspApi))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(Body(code: code, info: myInfo))
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            guard status == 200 else { throw LSError.fromPairing(status: status, body: data) }
             return try JSONDecoder().decode(LSDeviceInfo.self, from: data)
         } catch { throw mapTransport(error) }
     }

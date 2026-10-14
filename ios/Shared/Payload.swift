@@ -56,17 +56,35 @@ enum PayloadBuilder {
     private static func copyFile(_ p: NSItemProvider, type: UTType, workDir: URL) async throws -> URL {
         let identifier = p.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: type) == true } ?? type.identifier
         let suggestedName = p.suggestedName   // read here: the callback runs on another queue
+        let isImage = type.conforms(to: .image)
         return try await withCheckedThrowingContinuation { cont in
             _ = p.loadFileRepresentation(forTypeIdentifier: identifier) { tmp, error in
                 guard let tmp else { return cont.resume(throwing: error ?? CocoaError(.fileReadUnknown)) }
-                let name = suggestedName.map { name -> String in
-                    (name as NSString).pathExtension.isEmpty ? name + "." + tmp.pathExtension : name
-                } ?? tmp.lastPathComponent
+                let name = fileName(suggested: suggestedName, tmp: tmp, isImage: isImage)
                 let dest = uniqueURL(in: workDir, name: normalizedName(name))
-                do { try FileManager.default.copyItem(at: tmp, to: dest); cont.resume(returning: dest) }
-                catch { cont.resume(throwing: error) }
+                // Move, don't copy: the provider's temp file is ours until this handler returns, and a
+                // multi-GB video shouldn't need twice its size in free space. Copy only if a move fails.
+                do { try FileManager.default.moveItem(at: tmp, to: dest); cont.resume(returning: dest) }
+                catch {
+                    do { try FileManager.default.copyItem(at: tmp, to: dest); cont.resume(returning: dest) }
+                    catch { cont.resume(throwing: error) }
+                }
             }
         }
+    }
+
+    /// The sender's name if it has one. Otherwise (some Photos items) a readable one instead of the
+    /// provider's temp name: "Photo 2026-10-14 01.30.12.webp".
+    static func fileName(suggested: String?, tmp: URL, isImage: Bool, now: Date = Date()) -> String {
+        let ext = tmp.pathExtension
+        if let s = suggested?.trimmingCharacters(in: .whitespaces), !s.isEmpty {
+            return (s as NSString).pathExtension.isEmpty && !ext.isEmpty ? s + "." + ext : s
+        }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        let base = "\(isImage ? "Photo" : "File") \(f.string(from: now))"
+        return ext.isEmpty ? base : base + "." + ext
     }
 
     /// Photos hands over JPEG transcodes named ".jpeg"; everything else we produce says ".jpg".

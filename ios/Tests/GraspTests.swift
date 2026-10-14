@@ -225,3 +225,41 @@ final class ScanTargetsTests: XCTestCase {
         XCTAssertTrue(Discovery.scanTargets(ip: v4(10, 0, 0, 1), mask: 0xFFFF_FFFE).isEmpty)
     }
 }
+
+final class CodePairingTests: XCTestCase {
+    func testGraspFieldMarksCodePairing() throws {
+        let grasp = try JSONDecoder().decode(LSDeviceInfo.self, from: Data(#"{"alias":"TEMPEST","version":"2.2","grasp":1}"#.utf8))
+        XCTAssertTrue(grasp.supportsCodePairing)
+        let stock = try JSONDecoder().decode(LSDeviceInfo.self, from: Data(#"{"alias":"LocalSend","version":"2.2"}"#.utf8))
+        XCTAssertFalse(stock.supportsCodePairing, "stock LocalSend keeps trust-on-first-use pairing")
+    }
+
+    func testPairingStatusMapping() {
+        guard case .wrongCode(let left) = LSError.fromPairing(status: 401, body: Data(#"{"message":"Wrong code","attemptsLeft":3}"#.utf8))
+        else { return XCTFail() }
+        XCTAssertEqual(left, 3)
+        guard case .pairingNotOpen = LSError.fromPairing(status: 409, body: Data()) else { return XCTFail() }
+        guard case .pairingLocked = LSError.fromPairing(status: 429, body: Data()) else { return XCTFail() }
+        guard case .badStatus(500, _) = LSError.fromPairing(status: 500, body: Data()) else { return XCTFail() }
+        XCTAssertEqual(LSError.wrongCode(attemptsLeft: 1).errorDescription, "Wrong code. 1 try left.")
+        XCTAssertEqual(LSError.wrongCode(attemptsLeft: 4).errorDescription, "Wrong code. 4 tries left.")
+    }
+}
+
+final class FileNameTests: XCTestCase {
+    private let tmp = URL(fileURLWithPath: "/tmp/.com.apple.Foundation.NSItemProvider.abc/temp7F3A.webp")
+    private let now = Date(timeIntervalSince1970: 1_791_984_000)
+
+    func testSuggestedNameWins() {
+        XCTAssertEqual(PayloadBuilder.fileName(suggested: "IMG_0001", tmp: tmp, isImage: true), "IMG_0001.webp")
+        XCTAssertEqual(PayloadBuilder.fileName(suggested: "Report.pdf", tmp: tmp, isImage: false), "Report.pdf")
+    }
+
+    func testNoSuggestedNameGetsAReadableOneNotTheTempName() {
+        let name = PayloadBuilder.fileName(suggested: nil, tmp: tmp, isImage: true, now: now)
+        XCTAssertTrue(name.hasPrefix("Photo 20"), name)
+        XCTAssertTrue(name.hasSuffix(".webp"), name)
+        XCTAssertFalse(name.contains("temp"), name)
+        XCTAssertTrue(PayloadBuilder.fileName(suggested: "  ", tmp: tmp, isImage: false, now: now).hasPrefix("File 20"))
+    }
+}
