@@ -286,3 +286,48 @@ final class FileNameTests: XCTestCase {
         XCTAssertTrue(PayloadBuilder.fileName(suggested: "  ", tmp: tmp, isImage: false, now: now).hasPrefix("File 20"))
     }
 }
+
+final class ZipFolderTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("grasp-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: dir) }
+
+    private func folder(_ name: String) throws -> URL {
+        let folder = dir.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        try Data("a".utf8).write(to: folder.appendingPathComponent("a.txt"))
+        try Data("b".utf8).write(to: folder.appendingPathComponent("sub/b.txt"))
+        return folder
+    }
+
+    func testFolderBecomesZipAndOriginalIsKept() throws {
+        let src = try folder("Trip")
+        let out = dir.appendingPathComponent("out")
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let zip = try PayloadBuilder.zipIfDirectory(src, workDir: out)
+        XCTAssertEqual(zip.lastPathComponent, "Trip.zip")
+        XCTAssertEqual(try Data(contentsOf: zip).prefix(2), Data("PK".utf8))   // zip local-file magic
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src.appendingPathComponent("sub/b.txt").path))
+        guard case .file(_, let name, let mime, _) = PayloadBuilder.fileItem(zip) else { return XCTFail() }
+        XCTAssertEqual(name, "Trip.zip")
+        XCTAssertEqual(mime, "application/zip")
+    }
+
+    func testSuggestedNameWinsAndClashesGetANumber() throws {
+        let src = try folder("tmp-123")
+        let first = try PayloadBuilder.zipIfDirectory(src, name: "Trip", workDir: dir)
+        let second = try PayloadBuilder.zipIfDirectory(src, name: "Trip", workDir: dir)
+        XCTAssertEqual(first.lastPathComponent, "Trip.zip")
+        XCTAssertEqual(second.lastPathComponent, "Trip 1.zip")
+    }
+
+    func testPlainFilePassesThroughUntouched() throws {
+        let file = dir.appendingPathComponent("a.pdf")
+        try Data("x".utf8).write(to: file)
+        XCTAssertEqual(try PayloadBuilder.zipIfDirectory(file, workDir: dir), file)
+    }
+}

@@ -10,7 +10,7 @@ enum OutgoingItem: Sendable {
 
 enum PayloadBuilder {
     /// Copies every attachment into `workDir` (provider temp URLs die after the callback),
-    /// converts HEIC/HEIF -> JPG, and turns URLs/plain text into `.text`.
+    /// converts HEIC/HEIF -> JPG, zips folders, and turns URLs/plain text into `.text`.
     static func build(from providers: [NSItemProvider], workDir: URL) async throws -> [OutgoingItem] {
         try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
         var items: [OutgoingItem] = []
@@ -21,6 +21,10 @@ enum PayloadBuilder {
     }
 
     private static func item(from p: NSItemProvider, workDir: URL) async throws -> OutgoingItem? {
+        // Folders (Files app) become one "<name>.zip".
+        if p.hasItemConformingToTypeIdentifier(UTType.folder.identifier) {
+            return fileItem(try await zipFolder(p, workDir: workDir))
+        }
         // Images first (Photos app). Prefer the original representation so we control conversion.
         if p.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
             let url = try await copyFile(p, type: .image, workDir: workDir)
@@ -35,12 +39,63 @@ enum PayloadBuilder {
         if p.hasItemConformingToTypeIdentifier(UTType.data.identifier)
             && !p.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
             let url = try await copyFile(p, type: .data, workDir: workDir)
-            return fileItem(url)
+            return fileItem(try zipCopiedDirectory(url, workDir: workDir))
         }
         if p.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
             if let s = try await loadObject(p, String.self) { return .text(s) }
         }
+        // Anything else (the share rule admits every item): send whatever file it offers.
+        if !p.registeredTypeIdentifiers.isEmpty {
+            let url = try await copyFile(p, type: .item, workDir: workDir)
+            return fileItem(try zipCopiedDirectory(url, workDir: workDir))
+        }
         return nil
+    }
+
+    /// Reads the folder in place where the provider allows it, so it isn't copied before being zipped.
+    private static func zipFolder(_ p: NSItemProvider, workDir: URL) async throws -> URL {
+        let identifier = p.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: .folder) == true }
+            ?? UTType.folder.identifier
+        let suggestedName = p.suggestedName   // read here: the callback runs on another queue
+        return try await withCheckedThrowingContinuation { cont in
+            _ = p.loadInPlaceFileRepresentation(forTypeIdentifier: identifier) { url, _, error in
+                guard let url else { return cont.resume(throwing: error ?? CocoaError(.fileReadUnknown)) }
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                cont.resume(with: Result(catching: { try zipIfDirectory(url, name: suggestedName, workDir: workDir) }))
+            }
+        }
+    }
+
+    /// For a directory we copied into `workDir` ourselves (e.g. a package such as a .pages bundle):
+    /// zip it and delete the copy so the share doesn't hold the folder twice.
+    private static func zipCopiedDirectory(_ url: URL, workDir: URL) throws -> URL {
+        let zipped = try zipIfDirectory(url, workDir: workDir)
+        if zipped != url { try? FileManager.default.removeItem(at: url) }
+        return zipped
+    }
+
+    /// Zips a directory into `workDir/<name>.zip` through NSFileCoordinator's `.forUploading`, which writes
+    /// the archive to disk itself, so the folder is never held in memory. Anything else is returned as is,
+    /// and the directory itself is left alone (it may be the user's original, read in place).
+    static func zipIfDirectory(_ url: URL, name: String? = nil, workDir: URL) throws -> URL {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { return url }
+        let trimmed = name?.trimmingCharacters(in: .whitespaces) ?? ""
+        let base = trimmed.isEmpty ? url.lastPathComponent : trimmed
+        let dest = uniqueURL(in: workDir, name: base + ".zip")
+        var coordinatorError: NSError?
+        var moveError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: .forUploading, error: &coordinatorError) { zip in
+            // The archive is deleted when this block returns: move it out, or copy if the move fails.
+            do { try FileManager.default.moveItem(at: zip, to: dest) }
+            catch {
+                do { try FileManager.default.copyItem(at: zip, to: dest) } catch { moveError = error }
+            }
+        }
+        if let coordinatorError { throw coordinatorError }
+        if let moveError { throw moveError }
+        return dest
     }
 
     /// `loadObject(ofClass:)` has no async overload; bridge the completion handler.

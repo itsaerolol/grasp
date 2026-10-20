@@ -11,7 +11,7 @@ It speaks LocalSend's protocol, so stock LocalSend desktop still works as a fall
 
 ```
 Share sheet ──tap PC (suggestion row) or Grasp icon──▶ GraspShare extension
-  1. Normalize items: HEIC→JPG, URL/text→message, files copied to tmp
+  1. Normalize items: HEIC→JPG, URL/text→message, folders→.zip, files copied to tmp
   2. Resolve PC: GET /info at its stored IP (pinned cert); no automatic network sweep
   3. POST /prepare-upload ──▶ chime + toast on the PC: Accept / Reject ──▶ tokens (or 204 for text)
   4. POST /upload per file, streamed from disk, sha256 verified by the PC
@@ -65,7 +65,7 @@ Shared/                      Compiled into both targets
   LSSessionDelegate.swift    Server pin / TOFU + client cert challenge + upload progress
   LSClient.swift             register / info / prepare-upload / upload (streamed) / cancel
   Discovery.swift            /24 HTTP scan, resolve pinned PC after DHCP changes
-  Payload.swift              NSItemProvider → files/text, HEIC→JPG
+  Payload.swift              NSItemProvider → files/text, HEIC→JPG, folder→.zip
   ShareDonation.swift        INSendMessageIntent donation (top-row suggestion)
   SendEngine.swift           One share = one session; drives extension UI state
   PeerStore.swift            Paired PC in App Group defaults

@@ -81,15 +81,12 @@ targets:
           NSExtensionAttributes:
             IntentsSupported:
               - INSendMessageIntent
-            # Any number of photos, videos, files, one-or-more links, or text: like AirDrop, no count cap.
+            # Any number of items of any kind (photos, videos, files, folders, links, text): like AirDrop,
+            # no count cap. public.item is the root type, so nothing is excluded; folders are zipped.
             # (A predicate is the only way to lift the per-type max counts.)
             NSExtensionActivationRule: >-
               SUBQUERY(extensionItems, $item, SUBQUERY($item.attachments, $a,
-              ANY $a.registeredTypeIdentifiers UTI-CONFORMS-TO "public.image" OR
-              ANY $a.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie" OR
-              ANY $a.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data" OR
-              ANY $a.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url" OR
-              ANY $a.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text"
+              ANY $a.registeredTypeIdentifiers UTI-CONFORMS-TO "public.item"
               ).@count >= 1).@count >= 1
     entitlements:
       path: ShareExtension/GraspShare.entitlements
