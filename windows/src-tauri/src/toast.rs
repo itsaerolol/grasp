@@ -125,9 +125,8 @@ pub fn toast_show(app: AppHandle) {
         place(&w);
         let _ = w.show();
         let _ = w.set_always_on_top(true);
-        // WebView2 restores its own (refusing) drop target when the window is shown; put ours back.
         #[cfg(windows)]
-        crate::droptarget::arm(&app);
+        crate::droptarget::sync(&app);
     }
 }
 
@@ -136,6 +135,17 @@ pub fn toast_hidden(app: AppHandle) {
     if let Some(w) = window(&app) {
         let _ = w.hide();
     }
+    #[cfg(windows)]
+    crate::droptarget::set(&app, false);
+}
+
+/// The page shows (true) or leaves (false) the drop zone: the invisible drop overlay follows it.
+#[tauri::command]
+pub fn drop_overlay(app: AppHandle, on: bool) {
+    #[cfg(windows)]
+    crate::droptarget::set(&app, on);
+    #[cfg(not(windows))]
+    let _ = (app, on);
 }
 
 /// The page reports its card height so the transparent window never covers more than the toast.
@@ -144,6 +154,8 @@ pub fn toast_resize(app: AppHandle, height: f64) {
     if let Some(w) = window(&app) {
         let _ = w.set_size(LogicalSize::new(WIDTH, height.clamp(60.0, 600.0)));
         place(&w);
+        #[cfg(windows)]
+        crate::droptarget::sync(&app);
     }
 }
 

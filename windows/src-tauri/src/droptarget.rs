@@ -1,106 +1,136 @@
-//! The toast's own OLE drop target, so files can be dropped on it (Windows -> iPhone).
+//! Lets files be dropped on the toast's drop zone (Windows -> iPhone).
 //!
-//! Why not Tauri's drag-drop events: wry swaps a file-accepting target onto the WebView2 host window
-//! (`Chrome_WidgetWin_0`) when the webview is created. The toast is created hidden, and WebView2 puts its own
-//! target back when the window is shown; with external drops disabled that one refuses everything, so the
-//! cursor shows the "not allowed" sign. So every time the toast is shown we install ours on each of its child
-//! windows that belong to this process. WebView2's render windows live in msedgewebview2.exe (we can't
-//! register there, and they have no target), so OLE walks up from them to ours.
+//! The toast is a WebView2 window, and the windows under the cursor belong to msedgewebview2.exe: Grasp can't
+//! register a drop target on them, and WebView2's own refuses outside drops (the "not allowed" cursor, even
+//! with a target on Grasp's in-process host window, because OLE doesn't walk up to it). So while the drop zone
+//! is showing, Grasp puts a plain window of its own exactly over the toast: no WebView2 inside, almost fully
+//! transparent (alpha 1/255, still hit-tested), with Grasp's IDropTarget. What you see is the toast's dashed
+//! box underneath. The overlay exists only while the zone is up, so it never covers Accept / Reject.
 
-use std::{cell::Cell, cell::RefCell, ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::OsString,
+    os::windows::ffi::OsStringExt,
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use tauri::{AppHandle, Emitter, Manager};
 use windows::{
-    core::{implement, Ref, BOOL},
+    core::{implement, w, Ref},
     Win32::{
-        Foundation::{HWND, LPARAM, POINTL},
+        Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINTL, RECT, WPARAM},
+        Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH},
         System::{
             Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL},
+            LibraryLoader::GetModuleHandleW,
             Ole::{
-                IDropTarget, IDropTarget_Impl, RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop, CF_HDROP,
-                DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE,
+                IDropTarget, IDropTarget_Impl, RegisterDragDrop, ReleaseStgMedium, CF_HDROP, DROPEFFECT,
+                DROPEFFECT_COPY, DROPEFFECT_NONE,
             },
             SystemServices::MODIFIERKEYS_FLAGS,
         },
         UI::{
             Shell::{DragQueryFileW, HDROP},
-            WindowsAndMessaging::{EnumChildWindows, GetWindowThreadProcessId},
+            WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, GetWindowRect, RegisterClassW, SetLayeredWindowAttributes,
+                SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE,
+                WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            },
         },
     },
 };
 
-enum Event {
-    Hover(bool),
-    Files(Vec<PathBuf>),
-}
+/// The page wants the overlay (the drop zone is showing). Toast moves/resizes re-place it while set.
+static WANTED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
-    // Keeps our registered targets alive (OLE holds its own reference too). Main thread only.
-    static TARGETS: RefCell<Vec<IDropTarget>> = const { RefCell::new(Vec::new()) };
+    // The overlay window and its drop target, created once on the main thread and kept for the app's life.
+    static OVERLAY: Cell<Option<isize>> = const { Cell::new(None) };
+    static TARGET: RefCell<Option<IDropTarget>> = const { RefCell::new(None) };
 }
 
-/// Called whenever the toast is shown. WebView2 may restore its own target a moment after the window
-/// appears, so ours goes on now and again shortly after.
-pub fn arm(app: &AppHandle) {
-    let app = app.clone();
-    std::thread::spawn(move || {
-        for delay in [0, 200, 800] {
-            std::thread::sleep(Duration::from_millis(delay));
-            let a = app.clone();
-            let _ = app.run_on_main_thread(move || install(&a));
+/// Shows (over the toast) or hides the overlay. Safe from any thread.
+pub fn set(app: &AppHandle, on: bool) {
+    WANTED.store(on, Ordering::Relaxed);
+    sync(app);
+}
+
+/// Re-applies the wanted state, e.g. after the toast moved or resized.
+pub fn sync(app: &AppHandle) {
+    let a = app.clone();
+    let _ = app.run_on_main_thread(move || apply(&a));
+}
+
+fn apply(app: &AppHandle) {
+    let Some(overlay) = overlay(app) else { return };
+    let toast = app.get_webview_window("toast").and_then(|w| w.hwnd().ok()).map(|h| HWND(h.0 as _));
+    unsafe {
+        let mut r = RECT::default();
+        let placed = toast.is_some_and(|t| GetWindowRect(t, &mut r).is_ok());
+        if WANTED.load(Ordering::Relaxed) && placed {
+            let _ = SetWindowPos(
+                overlay,
+                Some(HWND_TOPMOST),
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        } else {
+            let _ = ShowWindow(overlay, SW_HIDE);
         }
-    });
-}
-
-fn install(app: &AppHandle) {
-    let Some(raw) = app.get_webview_window("toast").and_then(|w| w.hwnd().ok()).map(|h| h.0 as isize) else {
-        return;
-    };
-    let mut children: Vec<HWND> = Vec::new();
-    unsafe extern "system" fn collect(h: HWND, l: LPARAM) -> BOOL {
-        (*(l.0 as *mut Vec<HWND>)).push(h);
-        true.into()
     }
-    let _ = unsafe {
-        EnumChildWindows(Some(HWND(raw as _)), Some(collect), LPARAM(&mut children as *mut Vec<HWND> as isize))
-    };
+}
 
-    let handler: Rc<dyn Fn(Event)> = {
-        let app = app.clone();
-        Rc::new(move |e| match e {
-            Event::Hover(on) => {
-                let _ = app.emit_to("toast", "drop-hover", on);
-            }
-            Event::Files(paths) => {
-                let _ = app.emit_to("toast", "dropped", ());
-                crate::send::send_paths(&app, paths);
-            }
-        })
-    };
-    let me = std::process::id();
-    TARGETS.with(|t| {
-        let mut t = t.borrow_mut();
-        t.clear();
-        for h in children {
-            let mut pid = 0;
-            unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
-            if pid != me {
-                continue;
-            }
-            let target: IDropTarget = Target { on: handler.clone(), has_files: Cell::new(false) }.into();
-            unsafe {
-                let _ = RevokeDragDrop(h);
-                if RegisterDragDrop(h, &target).is_ok() {
-                    t.push(target);
-                }
-            }
-        }
-    });
+unsafe extern "system" fn wndproc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    DefWindowProcW(h, m, w, l)
+}
+
+/// Creates the overlay window and registers its drop target the first time. Main thread only.
+fn overlay(app: &AppHandle) -> Option<HWND> {
+    if let Some(h) = OVERLAY.get() {
+        return Some(HWND(h as _));
+    }
+    unsafe {
+        let instance = GetModuleHandleW(None).ok()?;
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(wndproc),
+            hInstance: instance.into(),
+            lpszClassName: w!("GraspDropOverlay"),
+            hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        let hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            w!("GraspDropOverlay"),
+            w!("Grasp drop zone"),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        )
+        .ok()?;
+        // Alpha 1 of 255: invisible, but unlike 0 it is still hit-tested, so drags find it.
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 1, LWA_ALPHA);
+        let target: IDropTarget = Target { app: app.clone(), has_files: Cell::new(false) }.into();
+        RegisterDragDrop(hwnd, &target).ok()?;
+        TARGET.with(|t| *t.borrow_mut() = Some(target));
+        OVERLAY.set(Some(hwnd.0 as isize));
+        Some(hwnd)
+    }
 }
 
 #[implement(IDropTarget)]
 struct Target {
-    on: Rc<dyn Fn(Event)>,
+    app: AppHandle,
     /// The current drag carries files (CF_HDROP). Anything else is refused.
     has_files: Cell<bool>,
 }
@@ -140,7 +170,7 @@ impl IDropTarget_Impl for Target_Impl {
         let files = unsafe { paths_of(data) }.is_some_and(|p| !p.is_empty());
         self.has_files.set(files);
         if files {
-            (self.on)(Event::Hover(true));
+            let _ = self.app.emit_to("toast", "drop-hover", true);
         }
         unsafe { *effect = if files { DROPEFFECT_COPY } else { DROPEFFECT_NONE } };
         Ok(())
@@ -153,7 +183,7 @@ impl IDropTarget_Impl for Target_Impl {
 
     fn DragLeave(&self) -> windows::core::Result<()> {
         if self.has_files.get() {
-            (self.on)(Event::Hover(false));
+            let _ = self.app.emit_to("toast", "drop-hover", false);
         }
         Ok(())
     }
@@ -168,8 +198,10 @@ impl IDropTarget_Impl for Target_Impl {
         // COPY tells Explorer we took a copy: the files stay where they are (the outbox reads them in place).
         let paths = unsafe { paths_of(data) }.unwrap_or_default();
         unsafe { *effect = if paths.is_empty() { DROPEFFECT_NONE } else { DROPEFFECT_COPY } };
+        set(&self.app, false);
         if !paths.is_empty() {
-            (self.on)(Event::Files(paths));
+            let _ = self.app.emit_to("toast", "dropped", ());
+            crate::send::send_paths(&self.app, paths);
         }
         Ok(())
     }

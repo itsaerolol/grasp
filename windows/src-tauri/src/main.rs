@@ -39,6 +39,7 @@ fn main() {
             toast::toast_hidden,
             toast::toast_resize,
             toast::reveal,
+            toast::drop_overlay,
             menu::menu_state,
             menu::set_auto_accept,
             menu::choose_save_dir,
@@ -126,7 +127,7 @@ fn main() {
             if let Some(paths) = send::paths_from_args(&std::env::args().collect::<Vec<_>>()) {
                 send::send_paths(app.handle(), paths);
             }
-            // Drops on the toast arrive through droptarget.rs (armed each time the toast is shown).
+            // Drops on the toast's drop zone arrive through droptarget.rs (an overlay window while it shows).
             dragwatch::start(app.handle().clone());
 
             // The menu behaves like a popup: it goes away when you click elsewhere.

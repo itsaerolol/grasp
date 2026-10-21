@@ -191,7 +191,7 @@ function markup() {
       return `<div class="row"><div class="glyph">${APP_ICON}</div><div class="text">
           <div class="title">Waiting for iPhone</div><div class="sub">${esc(what)}${more}</div>
           <div class="sub">Open Grasp on your iPhone to receive</div></div></div>
-        <div class="actions"><button id="cancel-send">Cancel</button></div>`;
+        <div class="actions"><button id="hide-send">Hide</button><button id="cancel-send" class="reject">Cancel</button></div>`;
     }
     case 'outgoing': {
       const pct = pctOf(c.sent, c.total);
@@ -213,6 +213,9 @@ function render() {
   wire();
   // The window is transparent and sized to the card, so it never blocks clicks beneath it.
   invoke('toast_resize', { height: document.querySelector('.stage').offsetHeight });
+  // Drops are caught by an invisible native window over the toast, only while the drop zone shows
+  // (it would otherwise cover Accept / Reject).
+  invoke('drop_overlay', { on: current.kind === 'dropzone' });
 }
 
 function wire() {
@@ -229,6 +232,7 @@ function wire() {
   });
   on('reject', () => { invoke('respond', { id: c.id, accept: false }); dismiss(); });
   on('cancel-send', () => { invoke('clear_outbox'); dismiss(); });
+  on('hide-send', dismiss);   // still queued: the tray menu shows it, and the phone collects it as usual
 }
 
 function autoDismiss(ms) {
@@ -261,7 +265,6 @@ async function present(item) {
   card.onmouseenter = card.onmouseleave = null;
   if (item.kind === 'failed') autoDismiss(6000);
   if (item.kind === 'paired' || item.kind === 'sent') autoDismiss(3800);
-  if (item.kind === 'queued') hoverToStay(6000);
 }
 
 function dismiss() {
@@ -304,6 +307,11 @@ listen('drag-start', () => {
   if (current && passive(current.kind) && current.kind !== 'dropzone') swap(zone);
 });
 listen('drop-hover', ({ payload: on }) => document.getElementById('drop')?.classList.toggle('hover', on));
+// Cleared from the tray menu: nothing is waiting any more.
+listen('outbox-cleared', () => {
+  queue = queue.filter((q) => q.kind !== 'queued');
+  if (current?.kind === 'queued') dismiss();
+});
 listen('dropped', () => { if (current?.kind === 'dropzone') current.dropped = true; });
 // Let go elsewhere: the zone goes. (A drop on it is replaced by the 'queued' card from the core.)
 listen('drag-end', () => setTimeout(() => {
@@ -359,7 +367,8 @@ listen('ui', ({ payload: p }) => {
       break;
     case 'queued': {
       const item = { kind: 'queued', id: 'queued', count: p.count, waiting: p.waiting, first: p.first };
-      if (current && (current.kind === 'dropzone' || current.kind === 'queued')) { swap(item); hoverToStay(6000); }
+      // Stays until the phone starts collecting (becomes the progress card), Cancel, or Hide.
+      if (current && (current.kind === 'dropzone' || current.kind === 'queued')) swap(item);
       else show(item);
       break;
     }

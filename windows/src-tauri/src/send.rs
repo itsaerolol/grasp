@@ -8,7 +8,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use grasp_core::UiEvent;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::{menu::Shell, toast::TauriUi};
@@ -132,10 +132,12 @@ fn stamp() -> String {
 }
 
 #[tauri::command]
-pub fn clear_outbox(shell: State<'_, Arc<Shell>>) {
+pub fn clear_outbox(app: AppHandle, shell: State<'_, Arc<Shell>>) {
     if let Some(h) = &shell.handle {
         h.clear_outbox();
     }
+    // A "Waiting for iPhone" card still up has nothing to wait for now.
+    let _ = app.emit_to("toast", "outbox-cleared", ());
 }
 
 /// Puts "iPhone (Grasp)" in Explorer's Send to menu, pointing at this exe. Rewritten on every start so it

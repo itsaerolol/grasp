@@ -31,10 +31,11 @@ final class PairingModel: ObservableObject {
         await refreshStatus()
     }
 
-    /// One pinned GET /info at the last known address. No scanning.
-    func refreshStatus() async {
+    /// One pinned GET /info at the last known address. No scanning. `quiet` keeps the current chip while
+    /// checking (the 5-second live check), instead of flashing "checking".
+    func refreshStatus(quiet: Bool = false) async {
         guard let me, let peer = paired else { return }
-        reachable = nil
+        if !quiet { reachable = nil }
         let direct = LSClient(host: peer.host, port: peer.port, expectedFingerprint: peer.certFingerprint,
                               me: me, connectTimeout: 2)
         reachable = (try? await direct.info()) != nil
@@ -194,13 +195,17 @@ struct PairingView: View {
             if phase == .active, model.paired != nil, !model.sending { Task { await model.refreshStatus() } }
         }
         .onChange(of: model.paired) { _, new in if new != nil { showFinder = false; showManual = false } }
-        // Windows -> iPhone: while the app is on screen, collect what the PC queued. Restarts when the paired
-        // PC, the identity or the foreground state changes; stops in the background (iOS would suspend it).
+        // Live status + Windows -> iPhone: while the app is on screen, check the PC every 5 seconds (one pinned
+        // GET /info, so the chip follows the PC going off and on) and collect whatever it queued. Restarts when
+        // the paired PC, the identity or the foreground state changes; stops in the background.
         .task(id: "\(model.paired?.id ?? "")|\(model.me != nil)|\(scenePhase == .active)") {
             guard scenePhase == .active, let me = model.me, let peer = model.paired else { return }
             while !Task.isCancelled {
-                await inbox.pull(peer: peer, me: me) { kind, text in model.show(kind, text) }
-                try? await Task.sleep(for: .seconds(8))
+                if !model.sending { await model.refreshStatus(quiet: true) }
+                if model.reachable == true {
+                    await inbox.pull(peer: peer, me: me) { kind, text in model.show(kind, text) }
+                }
+                try? await Task.sleep(for: .seconds(5))
             }
         }
     }
