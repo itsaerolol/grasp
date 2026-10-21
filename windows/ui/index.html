@@ -86,6 +86,14 @@
     display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
   }
 
+  /* Windows -> iPhone drop zone: shown while files are dragged anywhere, gone when they're let go elsewhere. */
+  .drop {
+    margin-top: 12px; height: 96px; border-radius: 14px; border: 2px dashed rgba(235, 235, 245, 0.32);
+    display: grid; place-items: center; color: var(--text-2); font-weight: 600;
+    transition: border-color 120ms, background 120ms, color 120ms;
+  }
+  .drop.hover { border-color: var(--accent); background: rgba(10, 132, 255, 0.14); color: var(--text); }
+
   .check circle { fill: var(--ok); }
   /* pathLength="1" normalises the path, so the dash always spans exactly the whole stroke. */
   .check path { fill: none; stroke: #fff; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round;
@@ -112,6 +120,7 @@ let current = null;      // what the card is showing: { kind, id, ... }
 let queue = [];          // things that arrived while the card was busy
 let timer = null;
 let leaving = false;
+let delivered = { n: 0, last: '' };   // items the phone collected since the last "Sent to iPhone" card
 
 const APP_ICON = `<svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3aa8ff"/><stop offset="1" stop-color="#0a5cff"/></linearGradient></defs><rect x="3" y="3" width="94" height="94" rx="22" fill="url(#g)"/><rect x="46" y="22" width="8" height="30" rx="3" fill="#fff"/><polygon points="33,48 67,48 50,68" fill="#fff" stroke="#fff" stroke-width="4" stroke-linejoin="round"/><path d="M30 64v13h40V64" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const CHECK = `<svg class="check" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="46"/><path pathLength="1" d="M29 52l15 15 28-32"/></svg>`;
@@ -171,7 +180,29 @@ function markup() {
         <div class="message">${esc(c.text)}</div>`;
     case 'failed':
       return `<div class="row"><div class="glyph">${WARN}</div><div class="text">
-          <div class="title">Couldn’t receive</div><div class="sub wrap">${esc(c.reason)}</div></div></div>`;
+          <div class="title">${c.sending ? 'Couldn’t send' : 'Couldn’t receive'}</div><div class="sub wrap">${esc(c.reason)}</div></div></div>`;
+    case 'dropzone':
+      return `<div class="row"><div class="glyph">${APP_ICON}</div><div class="text">
+          <div class="title">Send to iPhone</div><div class="sub">Drop here to send</div></div></div>
+        <div class="drop" id="drop">Drop files</div>`;
+    case 'queued': {
+      const what = c.count === 1 ? c.first : `${c.count} items`;
+      const more = c.waiting > c.count ? ` · ${c.waiting} waiting` : '';
+      return `<div class="row"><div class="glyph">${APP_ICON}</div><div class="text">
+          <div class="title">Waiting for iPhone</div><div class="sub">${esc(what)}${more}</div>
+          <div class="sub">Open Grasp on your iPhone to receive</div></div></div>
+        <div class="actions"><button id="cancel-send">Cancel</button></div>`;
+    }
+    case 'outgoing': {
+      const pct = pctOf(c.sent, c.total);
+      return `<div class="row"><div class="glyph">${APP_ICON}</div><div class="text">
+          <div class="title">iPhone</div><div class="sub">Sending ${esc(c.name)}…</div></div></div>
+        <div class="bar" id="bar"><i style="width:${pct}%"></i></div>
+        <div class="meta"><span id="sz">${sizeLine(c.sent, c.total)}</span><span id="pct">${pct}%</span></div>`;
+    }
+    case 'sent':
+      return `<div class="row"><div class="glyph">${CHECK}</div><div class="text">
+          <div class="title">Sent to iPhone</div><div class="sub">${esc(c.summary)}</div></div></div>`;
   }
 }
 
@@ -197,11 +228,27 @@ function wire() {
     render();
   });
   on('reject', () => { invoke('respond', { id: c.id, accept: false }); dismiss(); });
+  on('cancel-send', () => { invoke('clear_outbox'); dismiss(); });
 }
 
 function autoDismiss(ms) {
   clearTimeout(timer);
   timer = setTimeout(dismiss, ms);
+}
+
+// Stays while the pointer is on the card (so Cancel can be reached), then leaves.
+function hoverToStay(ms) {
+  card.onmouseenter = () => clearTimeout(timer);
+  card.onmouseleave = () => autoDismiss(2000);
+  autoDismiss(ms);
+}
+
+// Replace what's on the card now, without the slide-out/slide-in.
+function swap(item) {
+  clearTimeout(timer);
+  card.onmouseenter = card.onmouseleave = null;
+  current = item;
+  render();
 }
 
 async function present(item) {
@@ -213,7 +260,8 @@ async function present(item) {
   requestAnimationFrame(() => requestAnimationFrame(() => card.classList.add('in')));
   card.onmouseenter = card.onmouseleave = null;
   if (item.kind === 'failed') autoDismiss(6000);
-  if (item.kind === 'paired') autoDismiss(3500);
+  if (item.kind === 'paired' || item.kind === 'sent') autoDismiss(3800);
+  if (item.kind === 'queued') hoverToStay(6000);
 }
 
 function dismiss() {
@@ -233,11 +281,12 @@ function dismiss() {
 }
 
 // Something new wants the card. Transfers cut in front of passive toasts; passive toasts wait for transfers.
+const passive = (k) => ['copied', 'done', 'failed', 'paired', 'queued', 'sent', 'dropzone'].includes(k);
+
 function show(item) {
-  const passive = (k) => k === 'copied' || k === 'done' || k === 'failed' || k === 'paired';
   if (!current && !leaving) return present(item);
   if (leaving) return queue.push(item);
-  if ((item.kind === 'incoming' || item.kind === 'receiving') && passive(current.kind)) {
+  if (['incoming', 'receiving', 'outgoing'].includes(item.kind) && passive(current.kind)) {
     clearTimeout(timer);
     current = item;
     render();
@@ -247,6 +296,19 @@ function show(item) {
 }
 
 listen('incoming', ({ payload }) => show({ kind: 'incoming', id: payload.id, req: payload }));
+
+// Windows -> iPhone. Files are being dragged somewhere: offer the drop zone unless a transfer owns the card.
+listen('drag-start', () => {
+  const zone = { kind: 'dropzone', id: 'dropzone' };
+  if (!current && !leaving) return present(zone);
+  if (current && passive(current.kind) && current.kind !== 'dropzone') swap(zone);
+});
+listen('drop-hover', ({ payload: on }) => document.getElementById('drop')?.classList.toggle('hover', on));
+listen('dropped', () => { if (current?.kind === 'dropzone') current.dropped = true; });
+// Let go elsewhere: the zone goes. (A drop on it is replaced by the 'queued' card from the core.)
+listen('drag-end', () => setTimeout(() => {
+  if (current?.kind === 'dropzone' && !current.dropped) dismiss();
+}, 250));
 
 // A message the user accepted: the shell has already copied it (and opened it, if it was a web link).
 listen('accepted-message', ({ payload: p }) => {
@@ -295,18 +357,48 @@ listen('ui', ({ payload: p }) => {
         autoDismiss(3800);
       }
       break;
+    case 'queued': {
+      const item = { kind: 'queued', id: 'queued', count: p.count, waiting: p.waiting, first: p.first };
+      if (current && (current.kind === 'dropzone' || current.kind === 'queued')) { swap(item); hoverToStay(6000); }
+      else show(item);
+      break;
+    }
+    case 'outboxProgress':
+      if (current && current.kind === 'outgoing') {
+        if (current.name !== p.name) return swap({ kind: 'outgoing', id: 'outbox', name: p.name, sent: p.sent, total: p.total });
+        current.sent = p.sent; current.total = p.total;
+        const bar = document.querySelector('#bar > i'), pct = document.getElementById('pct'), sz = document.getElementById('sz');
+        if (bar) bar.style.width = pctOf(p.sent, p.total) + '%';
+        if (pct) pct.textContent = pctOf(p.sent, p.total) + '%';
+        if (sz) sz.textContent = sizeLine(p.sent, p.total);
+      } else if (current && passive(current.kind)) {
+        swap({ kind: 'outgoing', id: 'outbox', name: p.name, sent: p.sent, total: p.total });
+      } else {
+        show({ kind: 'outgoing', id: 'outbox', name: p.name, sent: p.sent, total: p.total });
+      }
+      break;
+    case 'outboxDelivered': {
+      delivered = { n: delivered.n + 1, last: p.text ? 'Text (copied on iPhone)' : p.name };
+      if (p.remaining > 0) break;
+      const sent = { kind: 'sent', id: 'sent', summary: delivered.n === 1 ? delivered.last : `${delivered.n} items` };
+      delivered = { n: 0, last: '' };
+      if (current && (current.kind === 'outgoing' || passive(current.kind))) { swap(sent); autoDismiss(3800); }
+      else show(sent);
+      break;
+    }
     case 'cancelled':
       queue = queue.filter((q) => q.id !== p.id);
       if (current && current.id === p.id) dismiss();
       break;
     case 'failed':
       queue = queue.filter((q) => q.id !== p.id);
+      const sending = /^(outbox|send)-/.test(p.id);
       if (current && current.id === p.id) {
-        current = { kind: 'failed', id: p.id, reason: p.reason };
+        current = { kind: 'failed', id: p.id, reason: p.reason, sending };
         render();
         autoDismiss(6000);
       } else {
-        show({ kind: 'failed', id: p.id, reason: p.reason });
+        show({ kind: 'failed', id: p.id, reason: p.reason, sending });
       }
       break;
   }

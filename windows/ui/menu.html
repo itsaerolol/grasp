@@ -141,6 +141,14 @@ function render() {
       <div class="sub" title="Port ${s.port}">${esc(s.address ?? 'No network')}</div></div>${status}</div>
     ${s.serverError ? `<div class="group"><div class="item warn"><span class="label">${esc(s.serverError)}</span></div></div>` : ''}
     <h2>iPhone</h2>${iphone}
+    <h2>Send to iPhone</h2>
+    <div class="group">
+      <div class="item btn ${paired.length ? '' : 'disabled'}" id="send-files" role="menuitem" tabindex="0"><span class="label">Send files…</span></div>
+      <div class="item btn ${paired.length ? '' : 'disabled'}" id="send-clip" role="menuitem" tabindex="0" title="Copied files, a screenshot, or text">
+        <span class="label">Send clipboard</span></div>
+      ${s.waiting ? `<div class="item"><span class="label">Waiting for iPhone<div class="sub">Open Grasp on your iPhone to receive</div></span>
+        <span class="chip">${s.waiting}</span><button class="link" id="clear-out">Clear</button></div>` : ''}
+    </div>
     <h2>Receiving</h2>
     <div class="group">
       <label class="item ${paired.length ? '' : 'disabled'}">
@@ -183,6 +191,9 @@ function wire() {
   on('save', async () => { await invoke('choose_save_dir'); refresh(); });
   on('open', () => invoke('open_save_dir'));
   on('quit', () => invoke('quit'));
+  on('send-files', () => invoke('send_files'));
+  on('send-clip', () => invoke('send_clipboard'));
+  on('clear-out', async () => { await invoke('clear_outbox'); refresh(); });
   const auto = document.getElementById('auto');
   if (auto) auto.onchange = async () => { await invoke('set_auto_accept', { on: auto.checked }); refresh(); };
   const login = document.getElementById('login');

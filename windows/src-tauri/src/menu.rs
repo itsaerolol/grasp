@@ -1,6 +1,7 @@
 //! The tray menu: a small frameless window in the same always-dark style as the toast, opened from the
 //! tray icon and closed when it loses focus. It holds the few settings Grasp has (save folder,
-//! auto-accept for paired iPhones, launch at login), the pairing code, and the paired-device list.
+//! auto-accept for paired iPhones, launch at login), the pairing code, the paired-device list, and
+//! sending to the iPhone (send files, send clipboard, what's waiting for the phone).
 
 use std::{
     net::UdpSocket,
@@ -51,6 +52,8 @@ pub struct Shell {
     pub port: u16,
     pub fingerprint: String,
     pub server_error: Mutex<Option<String>>,
+    /// Where copied images are saved as PNGs until the phone collects them.
+    pub clips_dir: PathBuf,
 }
 
 impl Shell {
@@ -74,6 +77,8 @@ pub struct MenuState {
     save_dir: String,
     save_dir_name: String,
     launch_at_login: bool,
+    /// Items queued for the iPhone that it hasn't collected yet.
+    waiting: usize,
 }
 
 /// The LAN address other devices reach us on. Connecting a UDP socket sends nothing; it just asks
@@ -101,6 +106,7 @@ pub fn menu_state(app: AppHandle, shell: State<'_, Arc<Shell>>) -> MenuState {
         save_dir_name: dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.display().to_string()),
         save_dir: dir.display().to_string(),
         launch_at_login: app.autolaunch().is_enabled().unwrap_or(false),
+        waiting: handle.map(|h| h.outbox_len()).unwrap_or(0),
     }
 }
 

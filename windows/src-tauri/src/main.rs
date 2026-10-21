@@ -2,7 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod chime;
+mod dragwatch;
 mod menu;
+mod send;
 mod toast;
 
 use std::sync::{Arc, Mutex};
@@ -10,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use grasp_core::{cert, Config, Ui, UiEvent};
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    DragDropEvent, Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
 
@@ -20,8 +22,13 @@ const DEFAULT_PORT: u16 = 53317;
 
 fn main() {
     tauri::Builder::default()
-        // A second launch would fight over the port; just do nothing.
-        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
+        // A second launch would fight over the port, so it only hands over its arguments: Explorer's
+        // Send to runs `grasp-desktop.exe --send <paths>`.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(paths) = send::paths_from_args(&argv) {
+                send::send_paths(app, paths);
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -41,6 +48,9 @@ fn main() {
             menu::quit,
             menu::menu_resize,
             menu::menu_hide,
+            send::send_files,
+            send::send_clipboard,
+            send::clear_outbox,
         ])
         .setup(|app| {
             let ui = toast::TauriUi::new(app.handle().clone());
@@ -80,6 +90,7 @@ fn main() {
                 port,
                 fingerprint,
                 server_error: Mutex::new(None),
+                clips_dir: data.join("clipboard"),
             });
             app.manage(shell.clone());
             if let Some(server) = server {
@@ -106,6 +117,30 @@ fn main() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+
+            // Windows -> iPhone: the Send to entry, this launch's own `--send` (Grasp wasn't running yet),
+            // and the drop zone that opens while files are dragged.
+            send::install_send_to();
+            if let Some(paths) = send::paths_from_args(&std::env::args().collect::<Vec<_>>()) {
+                send::send_paths(app.handle(), paths);
+            }
+            dragwatch::start(app.handle().clone());
+            if let Some(toast) = app.get_webview_window("toast") {
+                let handle = app.handle().clone();
+                toast.on_window_event(move |e| {
+                    if let WindowEvent::DragDrop(drop) = e {
+                        match drop {
+                            DragDropEvent::Enter { .. } => { let _ = handle.emit_to("toast", "drop-hover", true); }
+                            DragDropEvent::Leave => { let _ = handle.emit_to("toast", "drop-hover", false); }
+                            DragDropEvent::Drop { paths, .. } => {
+                                let _ = handle.emit_to("toast", "dropped", ());
+                                send::send_paths(&handle, paths.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
 
             // The menu behaves like a popup: it goes away when you click elsewhere.
             if let Some(w) = app.get_webview_window("menu") {

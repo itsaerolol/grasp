@@ -71,7 +71,7 @@ impl Ui for TauriUi {
             UiEvent::Done { dir, first_file, .. } => {
                 open_in_explorer(PathBuf::from(first_file.clone().unwrap_or_else(|| dir.clone())));
             }
-            UiEvent::Paired { .. } => {
+            UiEvent::Paired { .. } | UiEvent::Queued { .. } | UiEvent::OutboxDelivered { .. } => {
                 let _ = self.app.emit_to("menu", "menu-refresh", ());
             }
             _ => {}

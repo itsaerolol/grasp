@@ -19,3 +19,10 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["sync", "time"] }
+# Explorer's Send to entry is a .lnk; Send clipboard turns a copied image into a PNG.
+mslnk = "0.1"
+png = "0.17"
+
+[target.'cfg(windows)'.dependencies]
+# Drag detection (dragwatch.rs) and local time for screenshot names.
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }
