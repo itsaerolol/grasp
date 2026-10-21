@@ -40,6 +40,7 @@ fn main() {
             toast::toast_resize,
             toast::reveal,
             toast::drop_overlay,
+            toast::cancel_receive,
             menu::menu_state,
             menu::set_auto_accept,
             menu::choose_save_dir,

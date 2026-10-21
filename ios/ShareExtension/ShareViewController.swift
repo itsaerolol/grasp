@@ -11,7 +11,14 @@ final class ShareViewController: UIViewController {
         let host = UIHostingController(rootView: ShareStatusView(
             engine: engine,
             onClose: { [weak self] in self?.finish(cancelled: false) },
-            onCancel: { [weak self] in self?.engine.cancel(); self?.finish(cancelled: true) }
+            // Wait for the PC to drop the transfer (it deletes what arrived) before closing the sheet:
+            // once the extension is gone, nothing would tell it.
+            onCancel: { [weak self] in
+                Task { @MainActor in
+                    await self?.engine.cancel()
+                    self?.finish(cancelled: true)
+                }
+            }
         ))
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false

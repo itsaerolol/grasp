@@ -113,6 +113,11 @@ impl Outbox {
         self.len() == 0
     }
 
+    /// Still queued? (The PC can cancel a send mid-stream by clearing the queue.)
+    pub fn contains(&self, id: &str) -> bool {
+        self.items.lock().unwrap().iter().any(|i| i.id() == id)
+    }
+
     pub fn get(&self, id: &str) -> Option<OutItem> {
         self.items.lock().unwrap().iter().find(|i| i.id() == id).cloned()
     }

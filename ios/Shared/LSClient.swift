@@ -186,9 +186,17 @@ final class LSClient: @unchecked Sendable {
         } catch { throw mapTransport(error) }
     }
 
+    /// Tells the PC to end the session; it deletes every file the session saved. Short timeout: the share
+    /// sheet waits for this before closing.
     func cancel(sessionId: String) async {
         var req = URLRequest(url: url("/cancel", ["sessionId": sessionId]))
         req.httpMethod = "POST"
+        req.timeoutInterval = 3
         _ = try? await session.data(for: req)
+    }
+
+    /// Stops every request in flight on this client (an upload's continuation then fails with cancelled).
+    func cancelTransfers() async {
+        for task in await session.allTasks { task.cancel() }
     }
 }

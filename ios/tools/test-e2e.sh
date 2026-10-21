@@ -20,6 +20,8 @@ check "text message -> 204, no upload" "send --text 'https://whiteframe.cc' && g
 check "pinned fingerprint accepted" "send --pin-fp $FP --info"
 check "wrong pinned fingerprint refused" "! send --pin-fp $(printf 'A%.0s' {1..64}) --info"
 check "no client cert refused (mandatory mTLS)" "! send --no-client-cert --info"
+echo one > "$T/c1.pdf"; echo two > "$T/c2.pdf"
+check "sender cancel deletes what already arrived, later uploads 410" "send '$T/c1.pdf' '$T/c2.pdf' --cancel-after 1 && grep -q 'cancelled after 1' '$T/send.log' && grep -q 'upload after cancel: 410' '$T/send.log' && [ ! -e '$T/inbox/c1.pdf' ] && [ ! -e '$T/inbox/c2.pdf' ]"
 stop_mock
 
 start_mock --reject

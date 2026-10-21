@@ -8,6 +8,7 @@
 //   node tools/ls-send.mjs --host 192.168.1.20 --fetch ./got     (Grasp for Windows: pull its outbox, like the iPhone app)
 // Options: --pin-fp <FP> (fail if server cert differs)  --pin <PIN>  --no-client-cert (prove mTLS is required)
 //          --cert <DIR> (use/create a different client identity there: "another phone")
+//          --cancel-after <N> (upload N files, cancel like the share sheet's Cancel, then try the next: expect 410)
 import https from 'node:https';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
@@ -25,7 +26,8 @@ const pin = opt('--pin', null);
 const text = opt('--text', null);
 const pairCode = opt('--pair', null);
 const fetchDir = opt('--fetch', null);
-const valueFlags = new Set(['--host', '--port', '--pin-fp', '--pin', '--text', '--pair', '--fetch', '--cert']);
+const cancelAfter = opt('--cancel-after', null);
+const valueFlags = new Set(['--host', '--port', '--pin-fp', '--pin', '--text', '--pair', '--fetch', '--cert', '--cancel-after']);
 const files = args.filter((a, i) => !a.startsWith('--') && !valueFlags.has(args[i - 1]));
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -130,7 +132,7 @@ async function fetchOutbox(root) {
 }
 
 const PAIR_ERR = { 400: 'Client certificate required', 401: 'Wrong code', 409: 'Pairing is not open on the PC', 429: 'Too many wrong codes' };
-const ERR = { 401: 'PIN required / invalid', 403: 'Rejected (or invalid token/IP)', 409: 'Busy: another session', 422: 'Checksum mismatch', 429: 'Too many requests' };
+const ERR = { 401: 'PIN required / invalid', 403: 'Rejected (or invalid token/IP)', 409: 'Busy: another session', 410: 'Cancelled', 422: 'Checksum mismatch', 429: 'Too many requests' };
 
 async function main() {
   const reg = await request('POST', '/register', { json: myInfo });
@@ -169,7 +171,16 @@ async function main() {
   if (prep.status !== 200) throw new Error(`prepare-upload ${prep.status}: ${ERR[prep.status] ?? JSON.stringify(prep.body)}`);
 
   const { sessionId, files: tokens } = prep.body;
+  let uploaded = 0;
   for (const r of refs.filter((r) => tokens[r.id])) {
+    if (cancelAfter != null && uploaded === Number(cancelAfter)) {
+      await request('POST', '/cancel', { query: { sessionId } });
+      console.log(`cancelled after ${uploaded}`);
+      const next = await request('POST', '/upload', { query: { sessionId, fileId: r.id, token: tokens[r.id] },
+        bodyStream: createReadStream(r.path), length: r.size });
+      return console.log(`upload after cancel: ${next.status} ${ERR[next.status] ?? ''}`);
+    }
+    uploaded += 1;
     const up = await request('POST', '/upload', { query: { sessionId, fileId: r.id, token: tokens[r.id] },
       bodyStream: createReadStream(r.path), length: r.size, timeout: 120_000 });
     if (up.status !== 200) throw new Error(`upload ${basename(r.path)} ${up.status}: ${ERR[up.status] ?? up.body}`);

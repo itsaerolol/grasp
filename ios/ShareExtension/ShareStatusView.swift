@@ -42,6 +42,7 @@ struct ShareStatusView: View {
         case .sending(let p): return "Sending \(Int(p * 100))%"
         case .done(let s): return s
         case .failed(let msg): return msg
+        case .cancelling: return "Cancelling…"
         }
     }
 
@@ -56,7 +57,7 @@ struct ShareStatusView: View {
 
     @ViewBuilder private var buttons: some View {
         switch engine.phase {
-        case .done: EmptyView()
+        case .done, .cancelling: EmptyView()
         case .failed: Button("Close", action: onClose).buttonStyle(.borderedProminent)
         default: Button("Cancel", role: .cancel, action: onCancel)
         }

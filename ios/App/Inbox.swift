@@ -53,6 +53,8 @@ final class Inbox: ObservableObject {
 
         let settings = SendSettings.load()
         var got: [Received] = []
+        var saved: [URL] = []          // files written in this pull, deleted again if the PC cancels it
+        var forPhotos: [URL] = []      // added to Photos only once the pull ends, so a cancel leaves no copy there
         var failure: String?
         for (i, item) in items.enumerated() {
             do {
@@ -66,15 +68,25 @@ final class Inbox: ObservableObject {
                     let shown = InboxPaths.components(of: name).last ?? name
                     receiving = (shown, i + 1, items.count, 0)
                     let dest = try InboxPaths.destination(for: name)
-                    try await client.downloadOutboxFile(id: item.id, to: dest) { [weak self] p in
-                        Task { @MainActor in
-                            if let r = self?.receiving, r.index == i + 1 { self?.receiving = (r.name, r.index, r.count, p) }
+                    do {
+                        try await client.downloadOutboxFile(id: item.id, to: dest) { [weak self] p in
+                            Task { @MainActor in
+                                if let r = self?.receiving, r.index == i + 1 { self?.receiving = (r.name, r.index, r.count, p) }
+                            }
                         }
+                    } catch {
+                        // The PC's X clears its queue and cuts the stream. If the item is gone from the queue,
+                        // the whole send was cancelled there: keep nothing from this pull.
+                        if let left = try? await client.outbox(), !left.contains(where: { $0.id == item.id }) {
+                            InboxPaths.remove(saved + [dest], below: InboxPaths.root)
+                            report(.error, LSError.cancelledOnPC.localizedDescription)
+                            return
+                        }
+                        throw error
                     }
-                    var toPhotos = false
-                    if settings.saveMediaToPhotos, InboxPaths.isPhotoOrVideo(dest) {
-                        toPhotos = await Self.saveToPhotos(dest)
-                    }
+                    saved.append(dest)
+                    let toPhotos = settings.saveMediaToPhotos && InboxPaths.isPhotoOrVideo(dest)
+                    if toPhotos { forPhotos.append(dest) }
                     got.append(Received(name: shown, kind: .file(dest, photos: toPhotos)))
                 default:
                     continue   // something a newer PC sends that this version doesn't know: leave it queued
@@ -85,6 +97,7 @@ final class Inbox: ObservableObject {
                 break
             }
         }
+        for url in forPhotos { _ = await Self.saveToPhotos(url) }
         recent = Array((got.reversed() + recent).prefix(20))
         if !got.isEmpty {
             UINotificationFeedbackGenerator().notificationOccurred(.success)

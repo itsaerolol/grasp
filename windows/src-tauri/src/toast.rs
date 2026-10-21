@@ -139,6 +139,14 @@ pub fn toast_hidden(app: AppHandle) {
     crate::droptarget::set(&app, false);
 }
 
+/// The X next to the receiving progress bar: stop that transfer and delete what it saved.
+#[tauri::command]
+pub fn cancel_receive(shell: State<'_, Arc<crate::menu::Shell>>, id: String) {
+    if let Some(h) = &shell.handle {
+        h.cancel_receive(&id);
+    }
+}
+
 /// The page shows (true) or leaves (false) the drop zone: the invisible drop overlay follows it.
 #[tauri::command]
 pub fn drop_overlay(app: AppHandle, on: bool) {

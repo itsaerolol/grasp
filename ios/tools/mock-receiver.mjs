@@ -5,6 +5,7 @@
 //  - /register: claimed fingerprint must equal presented client cert fingerprint
 //  - single session slot (409), upload must come from the same IP + valid token (403), sha256 check (422)
 //  - single text/plain file with preview = message -> 204 after accept, no upload
+//  - /cancel deletes every file the session saved (a cancel leaves nothing); its later uploads get 410
 //  - with --pair-code: acts like Grasp for Windows' code pairing (POST /api/grasp/v1/pair) and outbox
 //    (GET /api/grasp/v1/outbox, GET .../outbox/file?id=, POST .../outbox/done?id=; paired phones only), `grasp: 2`
 // Usage: node tools/mock-receiver.mjs [--auto-accept|--reject] [--pin 1234] [--port 53317] [--inbox ./mock-inbox] [--throttle-kbps 500]
@@ -44,7 +45,8 @@ const me = ensureCert(join(here, '.mock-server-cert'), 'Mock PC');
 const info = { alias: 'Mock PC', version: VERSION, deviceModel: 'Windows', deviceType: 'desktop',
   fingerprint: randomUUID(), download: false, ...(graspMode ? { grasp: GRASP_LEVEL } : {}) };
 
-let session = null; // { id, ip, files: {fileId: {dto, token, done}} }
+let session = null; // { id, ip, files: {fileId: {dto, token, done, out}} }
+let cancelledId = null; // last cancelled session: its uploads get 410
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 const rl = readline.createInterface({ input: process.stdin });
@@ -108,6 +110,7 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
         case `POST ${API}/upload`: {
           const f = session?.files[q.fileId];
           if (!q.sessionId || !q.fileId || !q.token) return json(res, 400, { message: 'Missing parameters' });
+          if (!session && q.sessionId === cancelledId) return json(res, 410, { message: 'Cancelled' });
           if (!session || session.id !== q.sessionId || session.ip !== ip || !f || f.token !== q.token)
             return json(res, 403, { message: 'Invalid token or IP address' });
           const tmp = join(inbox, `.${q.fileId}.part`), out = join(inbox, basename(f.dto.fileName));
@@ -124,7 +127,7 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
             if (f.dto.sha256 && actual.toLowerCase() !== f.dto.sha256.toLowerCase()) {
               unlinkSync(tmp); log('CHECKSUM MISMATCH', f.dto.fileName); return json(res, 422, { message: 'Checksum mismatch' });
             }
-            renameSync(tmp, out); f.done = true;
+            renameSync(tmp, out); f.done = true; f.out = out;
             log(`saved ${out} (${bytes}B${f.dto.sha256 ? ', sha256 ok' : ''})`);
             if (Object.values(session.files).every((x) => x.done)) { log('session complete'); session = null; }
             json(res, 200);
@@ -175,7 +178,10 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
         }
 
         case `POST ${API}/cancel`:
-          if (session && session.id === q.sessionId) { log('cancelled by sender'); session = null; }
+          if (session && session.id === q.sessionId) {
+            for (const f of Object.values(session.files)) if (f.out) { try { unlinkSync(f.out); } catch {} }
+            log('cancelled by sender, deleted what arrived'); cancelledId = session.id; session = null;
+          }
           return json(res, 200);
 
         default:

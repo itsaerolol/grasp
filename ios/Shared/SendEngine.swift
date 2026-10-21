@@ -11,6 +11,7 @@ final class SendEngine: ObservableObject {
         case sending(Double)             // 0...1 overall
         case done(String)                // summary
         case failed(String)
+        case cancelling                  // Cancel tapped: stopping and telling the PC to delete what it got
     }
 
     @Published private(set) var phase: Phase = .preparing
@@ -30,9 +31,15 @@ final class SendEngine: ObservableObject {
         #endif
     }
 
-    func cancel() {
+    /// Stops the upload and makes sure the PC drops the session (and deletes what already arrived) before
+    /// returning, so the share sheet can close knowing nothing was left behind. A prompt still waiting on the
+    /// PC is withdrawn by the dropped request.
+    func cancel() async {
+        phase = .cancelling
         task?.cancel()
-        if let c = activeClient, let s = activeSession { Task { await c.cancel(sessionId: s) } }
+        guard let client = activeClient else { return }
+        await client.cancelTransfers()
+        if let session = activeSession { await client.cancel(sessionId: session) }
     }
 
     private func run(providers: [NSItemProvider], targetPeerId: String?, workDir: URL) async {
@@ -77,9 +84,10 @@ final class SendEngine: ObservableObject {
             ShareDonation.donate(peer)
             phase = .done(summary(items))
         } catch is CancellationError {
-            phase = .failed("Cancelled")
+            if phase != .cancelling { phase = .failed("Cancelled") }
         } catch {
-            phase = .failed(error.localizedDescription)
+            // Cancel tapped: the stopped upload's error is expected, keep showing "Cancelling…".
+            if phase != .cancelling { phase = .failed(error.localizedDescription) }
         }
         try? FileManager.default.removeItem(at: workDir)
     }

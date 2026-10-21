@@ -87,6 +87,8 @@ enum LSError: LocalizedError {
     case locationNotRemoved(String)
     /// The PC's outbox only serves a phone paired by code (403).
     case notPairedByCode
+    /// The transfer was cancelled on the PC (the X on its toast): 410. The PC deleted what had arrived.
+    case cancelledOnPC
 
     var errorDescription: String? {
         switch self {
@@ -105,6 +107,8 @@ enum LSError: LocalizedError {
         case .wrongCode(let left):
             return left.map { "Wrong code. \($0) \($0 == 1 ? "try" : "tries") left." } ?? "Wrong code."
         case .pairingLocked: return "Too many wrong codes. Choose Pair iPhone on the PC again."
+        case .cancelledOnPC:
+            return "Cancelled on the PC. Nothing was kept."
         case .notPairedByCode:
             return "To receive from the PC, pair again with the code shown in Grasp's tray menu."
         case .locationNotRemoved(let name):
@@ -129,6 +133,7 @@ enum LSError: LocalizedError {
         case 401: return .pinRequired
         case 403: return .rejected
         case 409: return .busy
+        case 410: return .cancelledOnPC
         case 422: return .checksumMismatch
         case 429: return .tooManyRequests
         default: return .badStatus(status, body)

@@ -164,6 +164,8 @@ struct Inner {
     auto_accept: AtomicBool,
     pairing: Pairing,
     outbox: Outbox,
+    /// The last session cancelled (by the sender or on the PC): its later uploads get 410, not 403.
+    cancelled: Mutex<Option<String>>,
 }
 
 type AppState = Arc<Inner>;
@@ -236,8 +238,16 @@ impl Handle {
         self.0.outbox.len()
     }
 
+    /// Clears the queue. A file the phone is downloading right now stops mid-stream.
     pub fn clear_outbox(&self) {
         self.0.outbox.clear();
+    }
+
+    /// The X on the receiving toast: ends that transfer and deletes everything it saved.
+    pub fn cancel_receive(&self, request_id: &str) {
+        if let Some(id) = abort_session(&self.0, None, Some(request_id)) {
+            self.0.ui.event(UiEvent::Cancelled { id });
+        }
     }
 }
 
@@ -277,6 +287,7 @@ pub fn build(
         auto_accept: AtomicBool::new(cfg.auto_accept_paired),
         pairing: Pairing::load(cfg.state.join("paired.json")),
         outbox: Outbox::load(cfg.state.join("outbox.json")),
+        cancelled: Mutex::new(None),
     });
     let handle = Handle(state.clone());
 
@@ -404,6 +415,10 @@ async fn outbox_file(
         let (s, id, name) = (state.clone(), id.clone(), name.clone());
         async move {
             let (mut file, sent, last_emit) = st?;
+            // Cancelled on the PC (the queue was cleared): stop mid-file; the phone keeps nothing.
+            if !s.outbox.contains(&id) {
+                return Some((Err(std::io::Error::other("cancelled on the PC")), None));
+            }
             let mut buf = vec![0u8; 256 * 1024];
             match file.read(&mut buf).await {
                 Ok(0) => None,
@@ -582,7 +597,11 @@ async fn upload(
     let (name, expected_sha, request_id) = {
         let mut slot = s.slot.lock().unwrap();
         let Slot::Active(sess) = &mut *slot else {
-            return json_error(StatusCode::FORBIDDEN, "Invalid token or IP address");
+            return if was_cancelled(&s, &session_id) {
+                json_error(StatusCode::GONE, "Cancelled")
+            } else {
+                json_error(StatusCode::FORBIDDEN, "Invalid token or IP address")
+            };
         };
         let ok = sess.id == session_id
             && sess.ip == addr.ip()
@@ -603,6 +622,9 @@ async fn upload(
         Ok(hash) => hash,
         Err(e) => {
             let _ = tokio::fs::remove_file(&tmp).await;
+            if was_cancelled(&s, &session_id) {
+                return json_error(StatusCode::GONE, "Cancelled");
+            }
             s.ui.event(UiEvent::Failed { id: request_id, reason: format!("Transfer interrupted: {e}") });
             *s.slot.lock().unwrap() = Slot::Free;
             return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Upload failed");
@@ -626,7 +648,11 @@ async fn upload(
 
     let finished = {
         let mut slot = s.slot.lock().unwrap();
-        let Slot::Active(sess) = &mut *slot else { return StatusCode::OK.into_response() };
+        let Slot::Active(sess) = &mut *slot else {
+            // Cancelled while this file was being saved: a cancel leaves nothing behind.
+            let _ = std::fs::remove_file(&dest);
+            return json_error(StatusCode::GONE, "Cancelled");
+        };
         if let Some(f) = sess.files.get_mut(&file_id) {
             f.done = true;
         }
@@ -686,22 +712,44 @@ async fn stream_to_disk(s: &AppState, body: Body, tmp: &Path, request_id: &str) 
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// The sender cancelled: end the session and delete everything it saved.
 async fn cancel(State(s): State<AppState>, Query(q): Query<CancelQuery>) -> Response {
-    let cancelled = {
-        let mut slot = s.slot.lock().unwrap();
-        match &*slot {
-            Slot::Active(sess) if q.session_id.as_deref() == Some(sess.id.as_str()) => {
-                let id = sess.request_id.clone();
-                *slot = Slot::Free;
-                Some(id)
-            }
-            _ => None,
+    if let Some(sid) = q.session_id.as_deref() {
+        if let Some(id) = abort_session(&s, Some(sid), None) {
+            s.ui.event(UiEvent::Cancelled { id });
         }
-    };
-    if let Some(id) = cancelled {
-        s.ui.event(UiEvent::Cancelled { id });
     }
     StatusCode::OK.into_response()
+}
+
+fn was_cancelled(s: &Inner, session_id: &str) -> bool {
+    s.cancelled.lock().unwrap().as_deref() == Some(session_id)
+}
+
+/// Ends the active session if it matches, and deletes every file it saved plus any partial ones: a cancel
+/// (from the phone or the X on the toast) leaves nothing of the transfer on the PC. The upload still
+/// streaming notices on its next chunk, removes its own `.part` file and answers 410. Returns the
+/// session's request id (the toast's id).
+fn abort_session(s: &Inner, session_id: Option<&str>, request_id: Option<&str>) -> Option<String> {
+    let sess = {
+        let mut slot = s.slot.lock().unwrap();
+        let hit = matches!(&*slot, Slot::Active(sess)
+            if session_id.is_none_or(|id| id == sess.id) && request_id.is_none_or(|id| id == sess.request_id));
+        if !hit {
+            return None;
+        }
+        let Slot::Active(sess) = std::mem::replace(&mut *slot, Slot::Free) else { return None };
+        sess
+    };
+    *s.cancelled.lock().unwrap() = Some(sess.id.clone());
+    let inbox = s.inbox.lock().unwrap().clone();
+    for saved in &sess.saved {
+        let _ = std::fs::remove_file(saved);
+    }
+    for file_id in sess.files.keys() {
+        let _ = std::fs::remove_file(inbox.join(format!(".{file_id}.part")));
+    }
+    Some(sess.request_id)
 }
 
 /// Sender-controlled names must never escape the inbox: keep the last path component only and

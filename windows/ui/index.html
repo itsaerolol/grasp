@@ -75,6 +75,14 @@
   button.reject:hover { background: var(--reject-hover); }
 
   .bar { height: 6px; margin-top: 14px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  /* Progress bar with its cancel X on the right. */
+  .barrow { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+  .barrow .bar { flex: 1; margin-top: 0; }
+  button.stop {
+    flex: none; width: 24px; height: 24px; padding: 0; border-radius: 50%;
+    font-size: 11px; font-weight: 700; line-height: 24px; color: var(--text-2); background: var(--fill);
+  }
+  button.stop:hover { background: var(--reject); color: #fff; }
   .bar > i { display: block; height: 100%; width: 0%; border-radius: 3px; background: var(--accent); transition: width 140ms linear; }
   .bar.indeterminate > i { width: 35%; animation: slide 1.1s ease-in-out infinite; }
   .meta { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
@@ -165,7 +173,8 @@ function markup() {
       const pct = pctOf(c.received, c.total);
       return `<div class="row"><div class="glyph">${APP_ICON}</div><div class="text">
           <div class="title">${esc(who(c.req))}</div><div class="sub">Receiving…</div></div></div>
-        <div class="bar ${c.received ? '' : 'indeterminate'}" id="bar"><i style="width:${pct}%"></i></div>
+        <div class="barrow"><div class="bar ${c.received ? '' : 'indeterminate'}" id="bar"><i style="width:${pct}%"></i></div>
+          <button class="stop" id="stop-receive" title="Cancel and delete what arrived" aria-label="Cancel">✕</button></div>
         <div class="meta"><span id="sz">${sizeLine(c.received, c.total)}</span><span id="pct">${pct}%</span></div>`;
     }
     case 'done':
@@ -197,7 +206,8 @@ function markup() {
       const pct = pctOf(c.sent, c.total);
       return `<div class="row"><div class="glyph">${APP_ICON}</div><div class="text">
           <div class="title">iPhone</div><div class="sub">Sending ${esc(c.name)}…</div></div></div>
-        <div class="bar" id="bar"><i style="width:${pct}%"></i></div>
+        <div class="barrow"><div class="bar" id="bar"><i style="width:${pct}%"></i></div>
+          <button class="stop" id="stop-send" title="Cancel: nothing is kept on the iPhone" aria-label="Cancel">✕</button></div>
         <div class="meta"><span id="sz">${sizeLine(c.sent, c.total)}</span><span id="pct">${pct}%</span></div>`;
     }
     case 'sent':
@@ -232,7 +242,11 @@ function wire() {
   });
   on('reject', () => { invoke('respond', { id: c.id, accept: false }); dismiss(); });
   on('cancel-send', () => { invoke('clear_outbox'); dismiss(); });
-  on('hide-send', dismiss);   // still queued: the tray menu shows it, and the phone collects it as usual
+  on('hide-send', dismiss);
+  // Cancel a transfer in either direction. Receiving: the PC deletes what already arrived. Sending: the
+  // queue is cleared, the file stops mid-stream and the phone keeps nothing from this send.
+  on('stop-receive', () => { invoke('cancel_receive', { id: c.id }); dismiss(); });
+  on('stop-send', () => { invoke('clear_outbox'); dismiss(); });   // still queued: the tray menu shows it, and the phone collects it as usual
 }
 
 function autoDismiss(ms) {

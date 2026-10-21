@@ -493,6 +493,18 @@ final class InboxPathsTests: XCTestCase {
         XCTAssertEqual(second.lastPathComponent, "clip 1.mov")
     }
 
+    func testCancelledPullLeavesNothingBehind() throws {
+        let keep = try InboxPaths.destination(for: "keep.txt", in: root)
+        try Data("k".utf8).write(to: keep)
+        let a = try InboxPaths.destination(for: "Trip/day 2/a.jpg", in: root)
+        try Data("a".utf8).write(to: a)
+        let partial = try InboxPaths.destination(for: "Trip/b.mov", in: root)   // folder made, file never written
+        InboxPaths.remove([a, partial], below: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Trip").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keep.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+    }
+
     func testOnlyPhotosAndVideosGoToTheLibrary() {
         XCTAssertTrue(InboxPaths.isPhotoOrVideo(URL(fileURLWithPath: "/x/a.JPG")))
         XCTAssertTrue(InboxPaths.isPhotoOrVideo(URL(fileURLWithPath: "/x/a.mov")))

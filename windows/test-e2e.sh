@@ -29,6 +29,8 @@ check "pinned fingerprint accepted" "send --pin-fp $FP --info"
 check "wrong pinned fingerprint refused" "! send --pin-fp $(printf 'A%.0s' {1..64}) --info"
 check "client cert optional (works without one)" "send --no-client-cert --text hi"
 check "no leftover .part files" "! ls -a '$T/inbox' | grep -q '\.part$'"
+echo one > "$T/c1.pdf"; echo two > "$T/c2.pdf"
+check "sender cancel deletes what already arrived, later uploads 410" "send '$T/c1.pdf' '$T/c2.pdf' --cancel-after 1 && grep -q 'cancelled after 1' '$T/send.log' && grep -q 'upload after cancel: 410' '$T/send.log' && [ ! -e '$T/inbox/c1.pdf' ] && grep -q 'cancelled by sender' '$T/recv.log'"
 check "cert fingerprint is stable across restarts" "stop_recv; start_recv --auto-accept; grep -q \"fingerprint $FP\" '$T/recv.log'"
 stop_recv
 

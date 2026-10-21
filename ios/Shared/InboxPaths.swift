@@ -35,6 +35,20 @@ enum InboxPaths {
         return candidate
     }
 
+    /// Deletes files from a cancelled pull, then any folders that are left empty, up to (not including) `root`.
+    static func remove(_ files: [URL], below root: URL) {
+        let fm = FileManager.default
+        for file in files {
+            try? fm.removeItem(at: file)
+            var dir = file.deletingLastPathComponent().standardizedFileURL
+            let top = root.standardizedFileURL.path
+            while dir.path.hasPrefix(top + "/"), (try? fm.contentsOfDirectory(atPath: dir.path))?.isEmpty == true {
+                try? fm.removeItem(at: dir)
+                dir = dir.deletingLastPathComponent()
+            }
+        }
+    }
+
     /// Photos and videos also go to the Photos library (if the setting is on).
     static func isPhotoOrVideo(_ url: URL) -> Bool {
         guard let t = UTType(filenameExtension: url.pathExtension) else { return false }
