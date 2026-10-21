@@ -5,13 +5,15 @@
 //   node tools/ls-send.mjs --host 192.168.1.20 --text "hello"
 //   node tools/ls-send.mjs --host 192.168.1.20 --info            (print PC identity + cert fingerprint)
 //   node tools/ls-send.mjs --host 192.168.1.20 --pair 427        (Grasp for Windows: pair with the code it shows)
+//   node tools/ls-send.mjs --host 192.168.1.20 --fetch ./got     (Grasp for Windows: pull its outbox, like the iPhone app)
 // Options: --pin-fp <FP> (fail if server cert differs)  --pin <PIN>  --no-client-cert (prove mTLS is required)
+//          --cert <DIR> (use/create a different client identity there: "another phone")
 import https from 'node:https';
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { API, GRASP_API, PORT, VERSION, ensureCert, fingerprintOfDer } from './lib.mjs';
+import { API, GRASP_API, MIME, PORT, VERSION, ensureCert, fingerprintOfDer, safeRelative } from './lib.mjs';
 
 const args = process.argv.slice(2);
 const opt = (n, d) => (args.includes(n) ? args[args.indexOf(n) + 1] : d);
@@ -22,16 +24,14 @@ const pinnedFp = opt('--pin-fp', null)?.toUpperCase();
 const pin = opt('--pin', null);
 const text = opt('--text', null);
 const pairCode = opt('--pair', null);
-const valueFlags = new Set(['--host', '--port', '--pin-fp', '--pin', '--text', '--pair']);
+const fetchDir = opt('--fetch', null);
+const valueFlags = new Set(['--host', '--port', '--pin-fp', '--pin', '--text', '--pair', '--fetch', '--cert']);
 const files = args.filter((a, i) => !a.startsWith('--') && !valueFlags.has(args[i - 1]));
 
 const here = dirname(fileURLToPath(import.meta.url));
-const me = ensureCert(join(here, '.client-cert'), 'Grasp');
+const me = ensureCert(opt('--cert', join(here, '.client-cert')), 'Grasp');
 const myInfo = { alias: 'Grasp CLI', version: VERSION, deviceModel: 'iPhone', deviceType: 'mobile',
   fingerprint: me.fingerprint, port: PORT, protocol: 'https', download: false };
-
-const MIME = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.heic': 'image/heic',
-  '.pdf': 'application/pdf', '.txt': 'text/plain', '.mov': 'video/quicktime', '.mp4': 'video/mp4', '.zip': 'application/zip' };
 
 let serverFp = null;
 const agent = new https.Agent({
@@ -77,6 +77,58 @@ const sha256File = (p) => new Promise((res, rej) => {
   const h = createHash('sha256'); createReadStream(p).on('data', (c) => h.update(c)).on('end', () => res(h.digest('hex'))).on('error', rej);
 });
 
+// Streams a GET to `dest` (via a .part file) and returns the status. Never buffers the body.
+function download(path, query, dest) {
+  return new Promise((resolve, reject) => {
+    const req = https.request({ host, port, method: 'GET', agent, timeout: 120_000,
+      path: GRASP_API + path + '?' + new URLSearchParams(query) }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return resolve({ status: res.statusCode, bytes: 0 }); }
+      const part = dest + '.part', ws = createWriteStream(part); let bytes = 0;
+      res.on('data', (c) => { bytes += c.length; });
+      res.on('aborted', () => { ws.destroy(); try { unlinkSync(part); } catch {} reject(new Error('download aborted')); });
+      res.pipe(ws);
+      ws.on('finish', () => { renameSync(part, dest); resolve({ status: 200, bytes }); });
+    });
+    req.on('socket', (s) => verifyPeer(s, req));
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+// `photo.jpg`, then `photo 1.jpg`, `photo 2.jpg`... like the iPhone (never overwrites).
+function uniqueIn(dir, name) {
+  const dot = name.lastIndexOf('.'), stem = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : '';
+  let candidate = join(dir, name);
+  for (let n = 1; existsSync(candidate); n++) candidate = join(dir, `${stem} ${n}${ext}`);
+  return candidate;
+}
+
+// Mirrors the iPhone's InboxEngine: list, then per item save (file) or copy (text), then mark done.
+async function fetchOutbox(root) {
+  const list = await request('GET', '/outbox', { base: GRASP_API });
+  if (list.status !== 200) throw new Error(`outbox ${list.status}: ${list.body?.message ?? JSON.stringify(list.body)}`);
+  const items = list.body.items ?? [];
+  if (!items.length) return console.log('outbox: nothing waiting');
+  for (const it of items) {
+    if (it.kind === 'text') {
+      console.log(`TEXT: ${it.text}`);
+    } else {
+      const parts = safeRelative(it.fileName);
+      const dir = join(root, ...parts.slice(0, -1));
+      mkdirSync(dir, { recursive: true });
+      const dest = uniqueIn(dir, parts.at(-1));
+      const r = await download('/outbox/file', { id: it.id }, dest);
+      if (r.status !== 200) { console.log(`skipped ${it.fileName}: ${r.status}`); continue; }
+      if (r.bytes !== it.size) throw new Error(`${it.fileName}: got ${r.bytes}B, expected ${it.size}B`);
+      console.log(`fetched ${it.fileName} (${r.bytes}B) ✓`);
+    }
+    const done = await request('POST', '/outbox/done', { base: GRASP_API, query: { id: it.id } });
+    if (done.status !== 200) throw new Error(`done ${done.status}`);
+  }
+  console.log(`outbox: ${items.length} item(s) ✓`);
+}
+
 const PAIR_ERR = { 400: 'Client certificate required', 401: 'Wrong code', 409: 'Pairing is not open on the PC', 429: 'Too many wrong codes' };
 const ERR = { 401: 'PIN required / invalid', 403: 'Rejected (or invalid token/IP)', 409: 'Busy: another session', 422: 'Checksum mismatch', 429: 'Too many requests' };
 
@@ -86,7 +138,9 @@ async function main() {
   console.log(`PC cert fingerprint: ${serverFp}`);
   console.log(`my client fingerprint: ${me.fingerprint}`);
   console.log(`code pairing: ${reg.body?.grasp ? 'supported (Grasp for Windows)' : 'not supported'}`);
+  console.log(`outbox (PC -> iPhone): ${reg.body?.grasp >= 2 ? 'supported' : 'not supported'}`);
   if (flag('--info')) return;
+  if (fetchDir != null) return fetchOutbox(fetchDir);
 
   if (pairCode != null) {
     const r = await request('POST', '/pair', { base: GRASP_API, json: { code: pairCode, info: myInfo } });

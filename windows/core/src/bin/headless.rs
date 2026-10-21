@@ -1,6 +1,7 @@
 //! Headless receiver for the protocol tests: same server as the app, no toast.
 //! Usage: grasp-headless [--port 53318] [--inbox DIR] [--state DIR] [--auto-accept | --reject]
 //!        [--pair-code 123] (open a pairing window with this code)  [--auto-accept-paired]
+//!        [--send PATH]... (queue files/folders for the paired iPhone)  [--send-text TEXT]
 //! Without a decision flag it asks on stdin ("Accept? [y/N]"), like tools/mock-receiver.mjs.
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -43,6 +44,9 @@ impl Ui for HeadlessUi {
             UiEvent::Failed { reason, .. } => println!("FAILED {reason}"),
             UiEvent::AutoAccepted { request } => println!("AUTO-ACCEPTED from paired {}", request.from),
             UiEvent::Paired { device } => println!("PAIRED {} {}", device.alias, device.fingerprint),
+            UiEvent::Queued { count, waiting, .. } => println!("QUEUED {count} ({waiting} waiting)"),
+            UiEvent::OutboxProgress { .. } => {}
+            UiEvent::OutboxDelivered { name, remaining, .. } => println!("DELIVERED {name} ({remaining} left)"),
         }
     }
 }
@@ -79,6 +83,16 @@ async fn main() -> anyhow::Result<()> {
     if args.iter().any(|a| a == "--pair-code") {
         let w = handle.start_pairing_with(&opt("--pair-code", "000"), Duration::from_secs(3600));
         println!("pairing open, code {}", w.code);
+    }
+    let values = |n: &str| -> Vec<String> {
+        args.windows(2).filter(|w| w[0] == n).map(|w| w[1].clone()).collect()
+    };
+    let paths: Vec<PathBuf> = values("--send").into_iter().map(PathBuf::from).collect();
+    if !paths.is_empty() {
+        handle.send_paths(&paths);
+    }
+    for text in values("--send-text") {
+        handle.send_text(&text);
     }
     server.await
 }

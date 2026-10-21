@@ -54,5 +54,23 @@ check "same sender without its cert is not trusted" "! send --no-client-cert --t
 check "pairing survives a restart" "stop_recv; start_recv --reject --auto-accept-paired; send --text again && grep -q 'AUTO-ACCEPTED' '$T/recv.log'"
 stop_recv
 
+# Windows -> iPhone: the outbox. The phone (ls-send --fetch, same steps as the iPhone app) pulls; only the
+# phone paired above may. A folder keeps its structure; a file deleted before the pull is skipped and reported.
+mkdir -p "$T/out/Trip/day 2"
+head -c 2000000 /dev/urandom > "$T/out/Trip/day 2/clip.mov"; echo b > "$T/out/Trip/b.jpg"; echo x > "$T/out/Trip/desktop.ini"
+echo gone > "$T/out/gone.pdf"
+start_recv --reject --send "$T/out/Trip" --send "$T/out/gone.pdf" --send "$T/photo.jpg" --send-text 'https://whiteframe.cc'
+rm "$T/out/gone.pdf"
+check "info advertises the outbox" "send --info && grep -q 'outbox (PC -> iPhone): supported' '$T/send.log'"
+check "queued 4 files + 1 text (desktop.ini skipped)" "grep -q 'QUEUED 4 (4 waiting)' '$T/recv.log' && grep -q 'QUEUED 1 (5 waiting)' '$T/recv.log'"
+check "outbox needs a client cert" "! send --no-client-cert --fetch '$T/got' && grep -q 'Client certificate required' '$T/send.log'"
+check "another phone (unpaired cert) can't pull" "! send --cert '$T/other-phone' --fetch '$T/got' && grep -q 'Not paired' '$T/send.log'"
+check "paired phone pulls folder, files and text" "send --fetch '$T/got' && grep -q 'TEXT: https://whiteframe.cc' '$T/send.log' && cmp -s '$T/photo.jpg' '$T/got/photo.jpg'"
+check "folder structure kept" "cmp -s '$T/out/Trip/day 2/clip.mov' '$T/got/Trip/day 2/clip.mov' && cmp -s '$T/out/Trip/b.jpg' '$T/got/Trip/b.jpg' && [ ! -e '$T/got/Trip/desktop.ini' ]"
+check "deleted file is skipped and reported" "[ ! -e '$T/got/gone.pdf' ] && grep -q 'gone.pdf wasn.t sent to iPhone' '$T/recv.log'"
+check "delivered items leave the queue" "grep -q 'DELIVERED https://whiteframe.cc (0 left)' '$T/recv.log' && send --fetch '$T/got2' && grep -q 'nothing waiting' '$T/send.log'"
+check "queue survives a restart" "stop_recv; start_recv --reject --send-text later; stop_recv; start_recv --reject; send --fetch '$T/got3' && grep -q 'TEXT: later' '$T/send.log'"
+stop_recv
+
 echo "---- $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

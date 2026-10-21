@@ -15,10 +15,10 @@ use std::{
 
 use anyhow::Result;
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{ConnectInfo, DefaultBodyLimit, Query, State},
     Extension,
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -27,10 +27,11 @@ use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
     cert::Identity,
+    outbox::{OutItem, Outbox},
     pairing::{PairOutcome, PairedDevice, Pairing, PairingWindow},
     tls::{self, PeerCert, PeerCertAcceptor},
     ui::{FileSummary, IncomingRequest, Ui, UiEvent},
@@ -38,8 +39,10 @@ use crate::{
 
 pub const API: &str = "/api/localsend/v2";
 pub const VERSION: &str = "2.2";
-/// Grasp-only extension: code pairing. Advertised as `"grasp": 1` in /info and /register.
+/// Grasp-only extension, advertised as `"grasp": N` in /info and /register. 1: code pairing.
+/// 2: also the outbox (Windows -> iPhone, the phone pulls; see outbox.rs).
 pub const GRASP_API: &str = "/api/grasp/v1";
+pub const GRASP_LEVEL: u8 = 2;
 /// How long the toast waits for the human. Silence is a rejection, never an acceptance.
 /// (The sender's own prepare-upload timeout is 600s; this is deliberately much shorter.)
 const DECISION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -50,7 +53,7 @@ pub struct Config {
     pub port: u16,
     pub inbox: PathBuf,
     pub alias: String,
-    /// Where paired devices are remembered (`paired.json`).
+    /// Where paired devices (`paired.json`) and the outbox queue (`outbox.json`) are kept.
     pub state: PathBuf,
     /// Skip the Accept prompt for paired devices. Never applies to anyone else.
     pub auto_accept_paired: bool,
@@ -75,7 +78,8 @@ struct DeviceInfo {
     protocol: Option<String>,
     #[serde(default)]
     download: Option<bool>,
-    /// Grasp for Windows only: supports code pairing (`/api/grasp/v1/pair`). Stock LocalSend ignores it.
+    /// Grasp for Windows only: 1 = code pairing (`/api/grasp/v1/pair`), 2 = also the outbox. Stock
+    /// LocalSend ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     grasp: Option<u8>,
 }
@@ -122,6 +126,11 @@ struct CancelQuery {
     session_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct IdQuery {
+    id: Option<String>,
+}
+
 struct FileEntry {
     name: String,
     sha256: Option<String>,
@@ -154,6 +163,7 @@ struct Inner {
     inbox: Mutex<PathBuf>,
     auto_accept: AtomicBool,
     pairing: Pairing,
+    outbox: Outbox,
 }
 
 type AppState = Arc<Inner>;
@@ -200,6 +210,35 @@ impl Handle {
     pub fn unpair(&self, fingerprint: &str) {
         self.0.pairing.unpair(fingerprint);
     }
+
+    /// Queues files and folders for the paired iPhone to pull. Returns how many files were queued.
+    pub fn send_paths(&self, paths: &[PathBuf]) -> usize {
+        let added = self.0.outbox.add_paths(paths);
+        self.queued(&added);
+        added.len()
+    }
+
+    /// Queues text (or a link); the phone puts it on its clipboard.
+    pub fn send_text(&self, text: &str) -> bool {
+        let added: Vec<OutItem> = self.0.outbox.add_text(text).into_iter().collect();
+        self.queued(&added);
+        !added.is_empty()
+    }
+
+    fn queued(&self, added: &[OutItem]) {
+        if !added.is_empty() {
+            let first = added.first().map(|i| i.label());
+            self.0.ui.event(UiEvent::Queued { count: added.len(), waiting: self.0.outbox.len(), first });
+        }
+    }
+
+    pub fn outbox_len(&self) -> usize {
+        self.0.outbox.len()
+    }
+
+    pub fn clear_outbox(&self) {
+        self.0.outbox.clear();
+    }
 }
 
 pub async fn serve(cfg: Config, identity: Identity, ui: Arc<dyn Ui>) -> Result<()> {
@@ -227,7 +266,7 @@ pub fn build(
         port: Some(cfg.port),
         protocol: Some("https".into()),
         download: Some(false),
-        grasp: Some(1),
+        grasp: Some(GRASP_LEVEL),
     };
     let port = cfg.port;
     let state: AppState = Arc::new(Inner {
@@ -237,6 +276,7 @@ pub fn build(
         inbox: Mutex::new(cfg.inbox),
         auto_accept: AtomicBool::new(cfg.auto_accept_paired),
         pairing: Pairing::load(cfg.state.join("paired.json")),
+        outbox: Outbox::load(cfg.state.join("outbox.json")),
     });
     let handle = Handle(state.clone());
 
@@ -247,6 +287,9 @@ pub fn build(
         .route(&format!("{API}/upload"), post(upload))
         .route(&format!("{API}/cancel"), post(cancel))
         .route(&format!("{GRASP_API}/pair"), post(pair_handler))
+        .route(&format!("{GRASP_API}/outbox"), get(outbox_list))
+        .route(&format!("{GRASP_API}/outbox/file"), get(outbox_file))
+        .route(&format!("{GRASP_API}/outbox/done"), post(outbox_done))
         .layer(DefaultBodyLimit::disable())
         .with_state(state);
 
@@ -298,6 +341,110 @@ async fn pair_handler(
             .into_response(),
         PairOutcome::Locked => json_error(StatusCode::TOO_MANY_REQUESTS, "Too many wrong codes"),
     }
+}
+
+/// The outbox is only for a phone paired by code: its client cert fingerprint is the proof.
+fn require_paired(s: &AppState, fp: &Option<String>) -> Result<(), Response> {
+    match fp {
+        Some(fp) if s.pairing.is_paired(fp) => Ok(()),
+        Some(_) => Err(json_error(StatusCode::FORBIDDEN, "Not paired: pair this iPhone by code first")),
+        None => Err(json_error(StatusCode::FORBIDDEN, "Client certificate required")),
+    }
+}
+
+fn gone(s: &AppState, item: &OutItem) {
+    s.ui.event(UiEvent::Failed {
+        id: format!("outbox-{}", item.id()),
+        reason: format!("{} wasn't sent to iPhone: it was moved or deleted.", item.label()),
+    });
+}
+
+/// What's waiting for the phone. Files moved or deleted since they were queued are dropped (and reported).
+async fn outbox_list(State(s): State<AppState>, Extension(PeerCert(fp)): Extension<PeerCert>) -> Response {
+    if let Err(r) = require_paired(&s, &fp) {
+        return r;
+    }
+    for item in s.outbox.prune_missing() {
+        gone(&s, &item);
+    }
+    let items: Vec<_> = s.outbox.items().iter().map(OutItem::wire).collect();
+    Json(serde_json::json!({ "items": items })).into_response()
+}
+
+/// Streams one queued file from where it is on disk, in 256 KB chunks. Never buffers the file.
+async fn outbox_file(
+    State(s): State<AppState>,
+    Extension(PeerCert(fp)): Extension<PeerCert>,
+    Query(q): Query<IdQuery>,
+) -> Response {
+    if let Err(r) = require_paired(&s, &fp) {
+        return r;
+    }
+    let Some(id) = q.id else { return json_error(StatusCode::BAD_REQUEST, "Missing id") };
+    let Some(item) = s.outbox.get(&id) else {
+        return json_error(StatusCode::NOT_FOUND, "Not in the outbox");
+    };
+    let OutItem::File { path, .. } = &item else {
+        return json_error(StatusCode::BAD_REQUEST, "Not a file");
+    };
+    let opened = match tokio::fs::File::open(path).await {
+        Ok(f) => f.metadata().await.map(|m| (f, m.len())),
+        Err(e) => Err(e),
+    };
+    let Ok((file, total)) = opened else {
+        s.outbox.remove(&id);
+        gone(&s, &item);
+        return json_error(StatusCode::NOT_FOUND, "File was moved or deleted");
+    };
+
+    let name = item.label();
+    let state = s.clone();
+    let start = Instant::now() - Duration::from_secs(1);
+    let stream = futures_util::stream::unfold(Some((file, 0u64, start)), move |st| {
+        let (s, id, name) = (state.clone(), id.clone(), name.clone());
+        async move {
+            let (mut file, sent, last_emit) = st?;
+            let mut buf = vec![0u8; 256 * 1024];
+            match file.read(&mut buf).await {
+                Ok(0) => None,
+                Ok(n) => {
+                    buf.truncate(n);
+                    let sent = sent + n as u64;
+                    // Same ~15 updates a second as receiving.
+                    let last_emit = if last_emit.elapsed() >= Duration::from_millis(65) || sent >= total {
+                        s.ui.event(UiEvent::OutboxProgress { id, name, sent, total });
+                        Instant::now()
+                    } else {
+                        last_emit
+                    };
+                    Some((Ok::<_, std::io::Error>(Bytes::from(buf)), Some((file, sent, last_emit))))
+                }
+                Err(e) => Some((Err(e), None)),
+            }
+        }
+    });
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, total)
+        .body(Body::from_stream(stream))
+        .unwrap()
+}
+
+/// The phone saved an item: take it off the queue. Unknown ids are fine (a retried request).
+async fn outbox_done(
+    State(s): State<AppState>,
+    Extension(PeerCert(fp)): Extension<PeerCert>,
+    Query(q): Query<IdQuery>,
+) -> Response {
+    if let Err(r) = require_paired(&s, &fp) {
+        return r;
+    }
+    let Some(id) = q.id else { return json_error(StatusCode::BAD_REQUEST, "Missing id") };
+    if let Some((item, remaining)) = s.outbox.remove(&id) {
+        let text = matches!(item, OutItem::Text { .. });
+        s.ui.event(UiEvent::OutboxDelivered { id, name: item.label(), text, remaining });
+    }
+    StatusCode::OK.into_response()
 }
 
 /// Clears the slot (and dismisses the toast) if prepare-upload is dropped before it finishes,

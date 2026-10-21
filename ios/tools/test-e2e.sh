@@ -38,12 +38,16 @@ check "optional client cert (LocalSend 1.17): send without cert works" "send --n
 stop_mock
 
 # Grasp for Windows code pairing, as the mock implements it (same rules as windows/core/src/pairing.rs).
-start_mock --auto-accept --optional-client-cert --pair-code 427   # Grasp for Windows: client cert optional
-check "info advertises code pairing" "send --info && grep -q 'code pairing: supported' '$T/send.log'"
+mkdir -p "$T/out/Trip"; echo b > "$T/out/Trip/b.jpg"
+start_mock --auto-accept --optional-client-cert --pair-code 427 --send "$T/out/Trip" --send "$T/photo.jpg" --send-text 'https://whiteframe.cc'   # Grasp for Windows: client cert optional
+check "info advertises code pairing" "send --info && grep -q 'code pairing: supported' '$T/send.log' && grep -q 'outbox (PC -> iPhone): supported' '$T/send.log'"
+check "outbox refused before pairing" "! send --fetch '$T/got' && grep -q 'Not paired' '$T/send.log'"
 check "wrong code refused with attempts left" "! send --pair 111 && grep -q 'Wrong code (4 left)' '$T/send.log'"
 check "pairing needs a client cert" "! send --no-client-cert --pair 427 && grep -q 'Client certificate required' '$T/send.log'"
 check "right code pairs" "send --pair 427 && grep -q 'paired with Mock PC' '$T/send.log'"
 check "code is single-use" "! send --pair 427 && grep -q 'not open' '$T/send.log'"
+check "paired phone pulls the outbox (folder kept)" "send --fetch '$T/got' && cmp -s '$T/photo.jpg' '$T/got/photo.jpg' && cmp -s '$T/out/Trip/b.jpg' '$T/got/Trip/b.jpg' && grep -q 'TEXT: https://whiteframe.cc' '$T/send.log'"
+check "another phone can't pull" "! send --cert '$T/other-phone' --fetch '$T/got' && grep -q 'Not paired' '$T/send.log'"
 stop_mock
 
 echo "---- $PASS passed, $FAIL failed"

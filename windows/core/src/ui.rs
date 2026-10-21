@@ -49,6 +49,16 @@ pub enum UiEvent {
     Cancelled { id: String },
     #[serde(rename_all = "camelCase")]
     Failed { id: String, reason: String },
+    /// Windows -> iPhone: `count` things were just queued for the phone to pull; `waiting` is the whole
+    /// queue now. `first` names the first new one for the toast.
+    #[serde(rename_all = "camelCase")]
+    Queued { count: usize, waiting: usize, first: Option<String> },
+    /// The phone is downloading a queued file.
+    #[serde(rename_all = "camelCase")]
+    OutboxProgress { id: String, name: String, sent: u64, total: u64 },
+    /// The phone saved a queued item and took it off the queue. `remaining` are still waiting.
+    #[serde(rename_all = "camelCase")]
+    OutboxDelivered { id: String, name: String, text: bool, remaining: usize },
 }
 
 #[async_trait]

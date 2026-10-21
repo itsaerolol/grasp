@@ -5,15 +5,17 @@
 //  - /register: claimed fingerprint must equal presented client cert fingerprint
 //  - single session slot (409), upload must come from the same IP + valid token (403), sha256 check (422)
 //  - single text/plain file with preview = message -> 204 after accept, no upload
-//  - with --pair-code: acts like Grasp for Windows' code pairing (POST /api/grasp/v1/pair, `grasp: 1` in info)
-// Usage: node tools/mock-receiver.mjs [--auto-accept|--reject] [--pin 1234] [--port 53317] [--inbox ./mock-inbox] [--throttle-kbps 500] [--pair-code 427]
+//  - with --pair-code: acts like Grasp for Windows' code pairing (POST /api/grasp/v1/pair) and outbox
+//    (GET /api/grasp/v1/outbox, GET .../outbox/file?id=, POST .../outbox/done?id=; paired phones only), `grasp: 2`
+// Usage: node tools/mock-receiver.mjs [--auto-accept|--reject] [--pin 1234] [--port 53317] [--inbox ./mock-inbox] [--throttle-kbps 500]
+//        [--pair-code 427] [--send PATH]... (queue files/folders for the phone) [--send-text TEXT]
 import https from 'node:https';
 import { createHash, randomUUID } from 'node:crypto';
-import { createWriteStream, mkdirSync, renameSync, unlinkSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
-import { API, GRASP_API, PORT, VERSION, ensureCert, fingerprintOfDer } from './lib.mjs';
+import { API, GRASP_API, GRASP_LEVEL, PORT, VERSION, ensureCert, fingerprintOfDer, outboxEntries } from './lib.mjs';
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -29,11 +31,18 @@ let pairing = opt('--pair-code', null) != null ? { code: opt('--pair-code'), att
 const graspMode = pairing != null;
 const paired = new Set();
 mkdirSync(inbox, { recursive: true });
+// Windows -> iPhone queue, same shape as windows/core/src/outbox.rs.
+const values = (n) => args.flatMap((a, i) => (a === n && args[i + 1] != null ? [args[i + 1]] : []));
+const outbox = [
+  ...outboxEntries(values('--send')).map((e) => ({ kind: 'file', id: randomUUID(), ...e })),
+  ...values('--send-text').map((text) => ({ kind: 'text', id: randomUUID(), text })),
+];
+const wire = ({ path, ...rest }) => rest; // never show the phone a local path
 
 const here = dirname(fileURLToPath(import.meta.url));
 const me = ensureCert(join(here, '.mock-server-cert'), 'Mock PC');
 const info = { alias: 'Mock PC', version: VERSION, deviceModel: 'Windows', deviceType: 'desktop',
-  fingerprint: randomUUID(), download: false, ...(graspMode ? { grasp: 1 } : {}) };
+  fingerprint: randomUUID(), download: false, ...(graspMode ? { grasp: GRASP_LEVEL } : {}) };
 
 let session = null; // { id, ip, files: {fileId: {dto, token, done}} }
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -139,6 +148,32 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
           return json(res, 200, info);
         }
 
+        case `GET ${GRASP_API}/outbox`:
+        case `GET ${GRASP_API}/outbox/file`:
+        case `POST ${GRASP_API}/outbox/done`: {
+          if (!graspMode) return json(res, 404, { message: 'Not found' });
+          if (!clientFp) return json(res, 403, { message: 'Client certificate required' });
+          if (!paired.has(clientFp)) return json(res, 403, { message: 'Not paired: pair this iPhone by code first' });
+          if (url.pathname.endsWith('/outbox')) {
+            for (const gone of outbox.filter((i) => i.kind === 'file' && !existsSync(i.path))) {
+              outbox.splice(outbox.indexOf(gone), 1); log(`OUTBOX ${gone.fileName} was moved or deleted, dropped`);
+            }
+            return json(res, 200, { items: outbox.map(wire) });
+          }
+          if (!q.id) return json(res, 400, { message: 'Missing id' });
+          const i = outbox.findIndex((x) => x.id === q.id);
+          if (url.pathname.endsWith('/done')) {
+            if (i >= 0) { const [it] = outbox.splice(i, 1); log(`DELIVERED ${it.fileName ?? it.text} (${outbox.length} left)`); }
+            return json(res, 200);
+          }
+          const it = outbox[i];
+          if (!it) return json(res, 404, { message: 'Not in the outbox' });
+          if (it.kind !== 'file') return json(res, 400, { message: 'Not a file' });
+          if (!existsSync(it.path)) { outbox.splice(i, 1); return json(res, 404, { message: 'File was moved or deleted' }); }
+          res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': statSync(it.path).size });
+          return createReadStream(it.path).pipe(res);
+        }
+
         case `POST ${API}/cancel`:
           if (session && session.id === q.sessionId) { log('cancelled by sender'); session = null; }
           return json(res, 200);
@@ -152,4 +187,5 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
 server.listen(port, '0.0.0.0', () => {
   log(`Mock LocalSend receiver on https://0.0.0.0:${port}  mode=${mode}  clientCert=${mandatoryClientCert ? 'mandatory' : 'optional'}${pin ? '  pin=' + pin : ''}`);
   log(`server cert fingerprint ${me.fingerprint}`);
+  if (outbox.length) log(`outbox: ${outbox.length} item(s) waiting for a paired phone`);
 });
