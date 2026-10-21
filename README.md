@@ -92,7 +92,7 @@ windows/                     Grasp for Windows (Cargo workspace)
     src/bin/headless.rs      Same receiver without the toast, for tests
   src-tauri/                 Tauri shell: tray icon, toast window, chime (synthesized), Accept/Reject plumbing
   ui/index.html              The toast: the whole UI in one file
-  scripts/make-icons.mjs     Generates the placeholder icons (no dependencies)
+  scripts/make-icons.ps1     Builds every app icon (iOS, Windows, toast) from icon.png at the repo root
 tools/
   mock-receiver.mjs          Mock LocalSend receiver enforcing core's rules (mTLS, 409, 403, 422, 204)
   ls-send.mjs                Reference sender, same flow as SendEngine; works against the real PC

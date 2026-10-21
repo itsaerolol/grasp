@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Grasp for Windows: a tray-only LocalSend receiver with a toast UI.",
   "scripts": {
-    "icons": "node scripts/make-icons.mjs",
+    "icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-icons.ps1",
     "dev": "tauri dev",
     "build": "tauri build"
   },

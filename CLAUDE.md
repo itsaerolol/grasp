@@ -35,7 +35,8 @@ Grasp for Windows (`windows/`; Rust 1.96, MSVC build tools, Node and WebView2 ar
 ```bash
 bash windows/test-e2e.sh                          # 29 protocol tests against the Rust core's headless build, port 53398
 cd windows && cargo test --workspace                    # unit tests: filename sanitising, no-overwrite, link-safety rule, chime WAV
-cd windows && npm install && node scripts/make-icons.mjs   # one-time: Tauri CLI + generated icons (src-tauri/icons is output)
+cd windows && npm install                              # one-time: Tauri CLI
+powershell -ExecutionPolicy Bypass -File windows/scripts/make-icons.ps1   # after changing icon.png (repo root): regenerates the iOS AppIcon, src-tauri/icons and ui/app-icon.png (all committed)
 cd windows && npx tauri build --debug --no-bundle       # builds target/debug/grasp-desktop.exe (use `npx tauri build` for the NSIS installer)
 GRASP_PORT=53318 windows/target/debug/grasp-desktop.exe   # run it beside the real LocalSend, which owns 53317
 ```

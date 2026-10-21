@@ -54,7 +54,7 @@
 
   .row { display: flex; align-items: center; gap: 12px; }
   .glyph { flex: none; width: 40px; height: 40px; display: grid; place-items: center; }
-  .glyph svg { width: 40px; height: 40px; display: block; }
+  .glyph svg, .glyph img { width: 40px; height: 40px; display: block; }
   .text { min-width: 0; flex: 1; }
   .title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .sub { font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -130,7 +130,7 @@ let timer = null;
 let leaving = false;
 let delivered = { n: 0, last: '' };   // items the phone collected since the last "Sent to iPhone" card
 
-const APP_ICON = `<svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3aa8ff"/><stop offset="1" stop-color="#0a5cff"/></linearGradient></defs><rect x="3" y="3" width="94" height="94" rx="22" fill="url(#g)"/><rect x="46" y="22" width="8" height="30" rx="3" fill="#fff"/><polygon points="33,48 67,48 50,68" fill="#fff" stroke="#fff" stroke-width="4" stroke-linejoin="round"/><path d="M30 64v13h40V64" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const APP_ICON = `<img src="app-icon.png" alt="" draggable="false">`;
 const CHECK = `<svg class="check" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="46"/><path pathLength="1" d="M29 52l15 15 28-32"/></svg>`;
 const WARN = `<svg class="warn" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="46"/><path d="M50 28v28M50 70v2" stroke="#fff" stroke-width="7" stroke-linecap="round" fill="none"/></svg>`;
 
