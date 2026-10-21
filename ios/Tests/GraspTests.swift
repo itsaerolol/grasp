@@ -325,6 +325,26 @@ final class ZipFolderTests: XCTestCase {
         XCTAssertEqual(second.lastPathComponent, "Trip 1.zip")
     }
 
+    func testFileURLToAFolderIsZippedInPlace() throws {
+        let src = try folder("Misc")
+        let out = dir.appendingPathComponent("out")
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let sent = try PayloadBuilder.copyOrZip(src, workDir: out)
+        XCTAssertEqual(sent.lastPathComponent, "Misc.zip")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src.appendingPathComponent("a.txt").path))
+    }
+
+    func testFileURLToAFileIsCopiedUnderItsOwnName() throws {
+        let src = dir.appendingPathComponent("Report.pdf")
+        try Data("%PDF".utf8).write(to: src)
+        let out = dir.appendingPathComponent("out")
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let sent = try PayloadBuilder.copyOrZip(src, workDir: out)
+        XCTAssertEqual(sent.lastPathComponent, "Report.pdf")
+        XCTAssertEqual(try Data(contentsOf: sent), Data("%PDF".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src.path))   // original untouched
+    }
+
     func testPlainFilePassesThroughUntouched() throws {
         let file = dir.appendingPathComponent("a.pdf")
         try Data("x".utf8).write(to: file)

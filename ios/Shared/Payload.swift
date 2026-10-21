@@ -30,6 +30,12 @@ enum PayloadBuilder {
             let url = try await copyFile(p, type: .image, workDir: workDir)
             return try convertToJPGIfNeeded(url)
         }
+        // Files sometimes hands over nothing but a file URL (seen with an iCloud Drive folder). Send the item
+        // it points at, zipped if it's a folder; the URL's own representation is just a plist of the path.
+        if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier), !hasFileContents(p),
+           let url = try await loadObject(p, URL.self), url.isFileURL {
+            return fileItem(try copyOrZip(url, workDir: workDir))
+        }
         // Web links -> text message (lands as a copyable popup on the PC).
         if p.hasItemConformingToTypeIdentifier(UTType.url.identifier),
            !p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
@@ -50,6 +56,35 @@ enum PayloadBuilder {
             return fileItem(try zipCopiedDirectory(url, workDir: workDir))
         }
         return nil
+    }
+
+    /// True if the provider offers real file data, not only URL types (a file URL conforms to public.data).
+    private static func hasFileContents(_ p: NSItemProvider) -> Bool {
+        p.registeredTypeIdentifiers.contains { id in
+            guard let t = UTType(id) else { return false }
+            return t.conforms(to: .data) && !t.conforms(to: .url)
+        }
+    }
+
+    /// The item behind a file URL: a folder is zipped where it is, a file is copied into `workDir` under its
+    /// own name. Coordinated reads, so an iCloud file that isn't downloaded yet is fetched first. The user's
+    /// original is never moved or changed.
+    static func copyOrZip(_ url: URL, workDir: URL) throws -> URL {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+            return try zipIfDirectory(url, workDir: workDir)
+        }
+        let dest = uniqueURL(in: workDir, name: url.lastPathComponent)
+        var coordinatorError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinatorError) { src in
+            do { try FileManager.default.copyItem(at: src, to: dest) } catch { copyError = error }
+        }
+        if let coordinatorError { throw coordinatorError }
+        if let copyError { throw copyError }
+        return dest
     }
 
     /// Reads the folder in place where the provider allows it, so it isn't copied before being zipped.
@@ -109,7 +144,10 @@ enum PayloadBuilder {
     }
 
     private static func copyFile(_ p: NSItemProvider, type: UTType, workDir: URL) async throws -> URL {
-        let identifier = p.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: type) == true } ?? type.identifier
+        // Never pick a URL type when real contents exist: public.file-url conforms to public.data, and its
+        // representation is a plist of the path, not the file.
+        let candidates = p.registeredTypeIdentifiers.filter { UTType($0)?.conforms(to: type) == true }
+        let identifier = candidates.first { UTType($0)?.conforms(to: .url) == false } ?? candidates.first ?? type.identifier
         let suggestedName = p.suggestedName   // read here: the callback runs on another queue
         let isImage = type.conforms(to: .image)
         return try await withCheckedThrowingContinuation { cont in
