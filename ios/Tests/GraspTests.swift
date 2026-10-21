@@ -467,3 +467,37 @@ final class SettingsBehaviourTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("day2/notes.txt").path))
     }
 }
+
+final class InboxPathsTests: XCTestCase {
+    private var root: URL!
+
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("grasp-inbox-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
+
+    func testNamesCanNeverLeaveTheInbox() {
+        XCTAssertEqual(InboxPaths.components(of: "../../Library/evil.plist"), ["Library", "evil.plist"])
+        XCTAssertEqual(InboxPaths.components(of: "Trip/day 2/a:b?.jpg"), ["Trip", "day 2", "a_b_.jpg"])
+        XCTAssertEqual(InboxPaths.components(of: #"C:\Users\x\a.txt"#), ["C_", "Users", "x", "a.txt"])
+        XCTAssertEqual(InboxPaths.components(of: ".."), ["file"])
+        XCTAssertEqual(InboxPaths.components(of: ""), ["file"])
+    }
+
+    func testFoldersAreRecreatedAndNothingIsOverwritten() throws {
+        let first = try InboxPaths.destination(for: "Trip/day 2/clip.mov", in: root)
+        XCTAssertEqual(first.path, root.appendingPathComponent("Trip/day 2/clip.mov").path)
+        try Data("x".utf8).write(to: first)
+        let second = try InboxPaths.destination(for: "Trip/day 2/clip.mov", in: root)
+        XCTAssertEqual(second.lastPathComponent, "clip 1.mov")
+    }
+
+    func testOnlyPhotosAndVideosGoToTheLibrary() {
+        XCTAssertTrue(InboxPaths.isPhotoOrVideo(URL(fileURLWithPath: "/x/a.JPG")))
+        XCTAssertTrue(InboxPaths.isPhotoOrVideo(URL(fileURLWithPath: "/x/a.mov")))
+        XCTAssertTrue(InboxPaths.isVideo(URL(fileURLWithPath: "/x/a.mp4")))
+        XCTAssertFalse(InboxPaths.isPhotoOrVideo(URL(fileURLWithPath: "/x/a.pdf")))
+        XCTAssertFalse(InboxPaths.isPhotoOrVideo(URL(fileURLWithPath: "/x/noext")))
+    }
+}

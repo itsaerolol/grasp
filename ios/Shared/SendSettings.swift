@@ -23,6 +23,9 @@ struct SendSettings: Equatable, Sendable {
     /// Off: it's sent as Note.txt.
     var textAsMessage = true
     var folderMode: FolderMode = .zip
+    /// Windows -> iPhone: photos and videos from the PC also go to the Photos library (everything always
+    /// lands in Files > On My iPhone > Grasp).
+    var saveMediaToPhotos = true
 
     static let defaults = SendSettings()
     static let jpegQualityRange: ClosedRange<Double> = 0.5...1
@@ -31,6 +34,7 @@ struct SendSettings: Equatable, Sendable {
         static let photoFormat = "settings.photoFormat", jpegQuality = "settings.jpegQuality"
         static let stripLocation = "settings.stripLocation", namePhotosByDate = "settings.namePhotosByDate"
         static let textAsMessage = "settings.textAsMessage", folderMode = "settings.folderMode"
+        static let saveMediaToPhotos = "settings.saveMediaToPhotos"
     }
 
     static func load(from d: UserDefaults = AppConfig.defaults) -> SendSettings {
@@ -43,6 +47,7 @@ struct SendSettings: Equatable, Sendable {
         if d.object(forKey: Key.namePhotosByDate) != nil { s.namePhotosByDate = d.bool(forKey: Key.namePhotosByDate) }
         if d.object(forKey: Key.textAsMessage) != nil { s.textAsMessage = d.bool(forKey: Key.textAsMessage) }
         if let v = d.string(forKey: Key.folderMode).flatMap(FolderMode.init) { s.folderMode = v }
+        if d.object(forKey: Key.saveMediaToPhotos) != nil { s.saveMediaToPhotos = d.bool(forKey: Key.saveMediaToPhotos) }
         return s
     }
 
@@ -53,5 +58,6 @@ struct SendSettings: Equatable, Sendable {
         d.set(namePhotosByDate, forKey: Key.namePhotosByDate)
         d.set(textAsMessage, forKey: Key.textAsMessage)
         d.set(folderMode.rawValue, forKey: Key.folderMode)
+        d.set(saveMediaToPhotos, forKey: Key.saveMediaToPhotos)
     }
 }

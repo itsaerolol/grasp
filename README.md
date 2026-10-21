@@ -1,6 +1,6 @@
 # Grasp
 
-iPhone share sheet → Windows PC, AirDrop-style, in two apps that speak the LocalSend v2.2 protocol:
+iPhone share sheet → Windows PC (and back), AirDrop-style, in two apps that speak the LocalSend v2.2 protocol:
 
 - **Grasp (iOS):** a share extension. Pair once, then sharing is instant.
 - **Grasp for Windows (`windows/`):** a tray-only receiver with no window. A chime plays and a toast slides in at the top right with **Accept** and **Reject**; Accept turns the same toast into a progress bar, then a check. Nothing is ever accepted automatically.
@@ -20,6 +20,20 @@ Share sheet ──tap PC (suggestion row) or Grasp icon──▶ GraspShare exte
 
 On the PC, an accepted text message is copied to the clipboard, and opened in the browser if it is a single `http(s)` link. Rejecting, or not answering for 30 seconds, delivers nothing.
 
+### Windows → iPhone
+
+An iPhone app can't accept connections in the background, so the PC never pushes. It queues, and the phone pulls while Grasp is open:
+
+```
+PC: drag files (a "Drop files" zone appears on the corner card), right-click › Send to › iPhone (Grasp),
+    or tray › Send files… / Send clipboard  ──▶ outbox (files stay where they are; text kept)
+iPhone, Grasp open (checks every 8s, pinned mTLS, code-paired phones only):
+  1. GET  /api/grasp/v1/outbox            what's waiting
+  2. GET  /api/grasp/v1/outbox/file?id=   streamed to Files › On My iPhone › Grasp (folders recreated);
+                                          photos/videos also added to Photos; text goes on the clipboard
+  3. POST /api/grasp/v1/outbox/done?id=   PC drops it and shows "Sent to iPhone"
+```
+
 ## Locked v1 decisions
 
 | Area | Decision |
@@ -28,10 +42,11 @@ On the PC, an accepted text message is copied to the clipboard, and opened in th
 | Payload | Photos/screenshots, files/docs, text/links (no video focus) |
 | Targets | One default PC, zero-tap send |
 | Lifetime | Sheet stays open with progress; no background transfer |
-| Photos | Always HEIC→JPG (q 0.9, EXIF kept) |
+| Photos | HEIC→JPG by default (q 0.9, EXIF kept); Settings on the phone can keep originals, strip location, rename by date |
 | Text | LocalSend message; after Accept, copied to the clipboard and opened if it is one `http(s)` link |
 | Accept | Manual accept on the PC for everything, never automatic; unanswered for 30s = reject |
-| PC app | Tray + toast only, no window, no settings; always dark; top right of the primary monitor |
+| PC app | Tray + toast + small tray menu; always dark; top right of the primary monitor |
+| PC → iPhone | Pull only: the PC queues, the phone collects while Grasp is open; code-paired phones only |
 | Network | LAN only; pair by tap-only /24 scan or IP address; sends use the stored IP (no multicast entitlement) |
 | Distribution | Personal, TestFlight. Bundle `com.itsaerolol.grasp`, iOS 18+ |
 

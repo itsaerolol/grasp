@@ -139,6 +139,53 @@ final class LSClient: @unchecked Sendable {
         }
     }
 
+    // MARK: Windows -> iPhone (Grasp for Windows' outbox: the phone pulls)
+
+    /// What the PC has queued for this phone. 403 = this phone isn't paired by code; 404 = the PC isn't
+    /// Grasp for Windows (stock LocalSend has no outbox).
+    func outbox() async throws -> [LSOutboxItem] {
+        do {
+            let (data, resp) = try await session.data(from: url("/outbox", base: LS.graspApi))
+            if (resp as? HTTPURLResponse)?.statusCode == 403 { throw LSError.notPairedByCode }
+            _ = try check(resp, data)
+            return try JSONDecoder().decode(LSOutboxList.self, from: data).items
+        } catch { throw mapTransport(error) }
+    }
+
+    /// Streams one queued file to disk (URLSession's temp file, never memory) and moves it to `dest`.
+    func downloadOutboxFile(id: String, to dest: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
+        var req = URLRequest(url: url("/outbox/file", ["id": id], base: LS.graspApi))
+        req.timeoutInterval = 120
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            var watch: NSKeyValueObservation?
+            let task = session.downloadTask(with: req) { [weak self] tmp, resp, error in
+                watch?.invalidate()
+                if let error { return cont.resume(throwing: self?.mapTransport(error) ?? error) }
+                do {
+                    guard let self, let tmp, let resp else { throw CocoaError(.fileReadUnknown) }
+                    // A refusal's body is a small JSON message, so reading it is fine.
+                    _ = try self.check(resp, (resp as? HTTPURLResponse)?.statusCode == 200 ? Data() : (try? Data(contentsOf: tmp)) ?? Data())
+                    // The temp file is deleted when this handler returns: move it now.
+                    try FileManager.default.moveItem(at: tmp, to: dest)
+                    cont.resume()
+                } catch { cont.resume(throwing: error) }
+            }
+            // Completion-handler tasks skip the delegate's data callbacks, but their Progress still updates.
+            watch = task.progress.observe(\.fractionCompleted) { p, _ in progress(p.fractionCompleted) }
+            task.resume()
+        }
+    }
+
+    /// The phone saved the item: the PC takes it off the queue.
+    func outboxDone(id: String) async throws {
+        var req = URLRequest(url: url("/outbox/done", ["id": id], base: LS.graspApi))
+        req.httpMethod = "POST"
+        do {
+            let (data, resp) = try await session.data(for: req)
+            _ = try check(resp, data)
+        } catch { throw mapTransport(error) }
+    }
+
     func cancel(sessionId: String) async {
         var req = URLRequest(url: url("/cancel", ["sessionId": sessionId]))
         req.httpMethod = "POST"

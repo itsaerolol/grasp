@@ -46,6 +46,10 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: Grasp finds and sends files to your PC on this network.
+        # Windows -> iPhone: received files live in Documents, shown in Files > On My iPhone > Grasp.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSPhotoLibraryAddUsageDescription: Grasp saves photos and videos you send from your PC to your library.
         NSUserActivityTypes:
           - INSendMessageIntent
     entitlements:

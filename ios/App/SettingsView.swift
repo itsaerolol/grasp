@@ -12,6 +12,7 @@ struct SettingsView: View {
                 photos
                 linksAndText
                 folders
+                fromPC
                 Section {
                     Button("Restore Defaults", role: .destructive) { settings = .defaults }
                         .disabled(settings == .defaults)
@@ -68,6 +69,17 @@ struct SettingsView: View {
             Text(settings.textAsMessage
                  ? "A single link or piece of text pops up on the PC and is copied to its clipboard. Links open in the browser."
                  : "A single link or piece of text arrives as Note.txt in the save folder.")
+        }
+    }
+
+    private var fromPC: some View {
+        Section {
+            Toggle("Save Photos & Videos to Photos", isOn: $settings.saveMediaToPhotos)
+        } header: {
+            Text("From PC")
+        } footer: {
+            Text("Everything the PC sends lands in Files › On My iPhone › Grasp."
+                 + (settings.saveMediaToPhotos ? " Photos and videos are also added to your library." : ""))
         }
     }
 

@@ -6,7 +6,8 @@ enum LS {
     static let port = 53317
     static let version = "2.2"
     static let api = "/api/localsend/v2"
-    /// Grasp for Windows extension: code pairing. Advertised as `grasp: 1` in /info and /register.
+    /// Grasp for Windows extension, advertised as `grasp: N` in /info and /register. 1: code pairing.
+    /// 2: also the outbox (Windows -> iPhone: this app pulls what the PC queued).
     static let graspApi = "/api/grasp/v1"
 }
 
@@ -26,6 +27,23 @@ struct LSDeviceInfo: Codable, Equatable, Sendable {
     var grasp: Int?
 
     var supportsCodePairing: Bool { (grasp ?? 0) >= 1 }
+    var supportsOutbox: Bool { (grasp ?? 0) >= 2 }
+}
+
+/// Windows -> iPhone: one thing Grasp for Windows queued for this phone (GET /api/grasp/v1/outbox).
+/// Same shape as windows/core/src/outbox.rs `OutItem::wire` and the mock.
+struct LSOutboxItem: Codable, Identifiable, Equatable, Sendable {
+    var kind: String          // "file" | "text"
+    var id: String
+    /// A folder's files keep their path under the folder's name, with "/" ("Trip/day 2/a.jpg").
+    var fileName: String?
+    var size: Int64?
+    var fileType: String?
+    var text: String?
+}
+
+struct LSOutboxList: Codable, Sendable {
+    var items: [LSOutboxItem]
 }
 
 struct LSFileDTO: Codable, Sendable {
@@ -67,6 +85,8 @@ enum LSError: LocalizedError {
     case pairingLocked
     /// "Remove location" is on but a photo couldn't be rewritten without it; never send it with GPS.
     case locationNotRemoved(String)
+    /// The PC's outbox only serves a phone paired by code (403).
+    case notPairedByCode
 
     var errorDescription: String? {
         switch self {
@@ -85,6 +105,8 @@ enum LSError: LocalizedError {
         case .wrongCode(let left):
             return left.map { "Wrong code. \($0) \($0 == 1 ? "try" : "tries") left." } ?? "Wrong code."
         case .pairingLocked: return "Too many wrong codes. Choose Pair iPhone on the PC again."
+        case .notPairedByCode:
+            return "To receive from the PC, pair again with the code shown in Grasp's tray menu."
         case .locationNotRemoved(let name):
             return "Couldn't remove the location from \(name). Turn off Remove location in Grasp's settings to send it."
         }

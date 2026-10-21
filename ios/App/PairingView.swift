@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// The containing app exists to: create the mTLS identity, pair one PC, and test.
-/// Everything day-to-day happens in the share extension.
+/// The containing app exists to: create the mTLS identity, pair one PC, test, hold the settings, and
+/// receive what the PC sends (Inbox). Everything day-to-day phone -> PC happens in the share extension.
 @MainActor
 final class PairingModel: ObservableObject {
     struct Toast: Equatable { enum Kind { case success, error }; let kind: Kind; let text: String }
@@ -153,6 +153,7 @@ final class PairingModel: ObservableObject {
 
 struct PairingView: View {
     @StateObject private var model = PairingModel()
+    @StateObject private var inbox = Inbox()
     @Environment(\.scenePhase) private var scenePhase
     @State private var showFinder = false
     @State private var showManual = false
@@ -186,6 +187,15 @@ struct PairingView: View {
             if phase == .active, model.paired != nil, !model.sending { Task { await model.refreshStatus() } }
         }
         .onChange(of: model.paired) { _, new in if new != nil { showFinder = false; showManual = false } }
+        // Windows -> iPhone: while the app is on screen, collect what the PC queued. Restarts when the paired
+        // PC, the identity or the foreground state changes; stops in the background (iOS would suspend it).
+        .task(id: "\(model.paired?.id ?? "")|\(model.me != nil)|\(scenePhase == .active)") {
+            guard scenePhase == .active, let me = model.me, let peer = model.paired else { return }
+            while !Task.isCancelled {
+                await inbox.pull(peer: peer, me: me) { kind, text in model.show(kind, text) }
+                try? await Task.sleep(for: .seconds(8))
+            }
+        }
     }
 
     @ViewBuilder private func pairedSection(_ peer: Peer) -> some View {
@@ -216,6 +226,7 @@ struct PairingView: View {
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
         }
+        InboxSection(inbox: inbox, pcName: peer.alias) { _ in model.show(.success, "Copied") }
     }
 
     private var menu: some View {
