@@ -41,7 +41,8 @@ final class SendEngine: ObservableObject {
             guard let stored = targetPeerId.flatMap(PeerStore.peer(id:)) ?? PeerStore.defaultPeer else {
                 return phase = .failed("No PC paired. Open Grasp to pair your PC.")
             }
-            let items = try await PayloadBuilder.build(from: providers, workDir: workDir)
+            let settings = SendSettings.load()
+            let items = try await PayloadBuilder.build(from: providers, workDir: workDir, settings: settings)
             guard !items.isEmpty else { return phase = .failed("Nothing sendable in this share.") }
 
             phase = .connecting(stored.alias)
@@ -51,7 +52,7 @@ final class SendEngine: ObservableObject {
             let client = LSClient(host: peer.host, port: peer.port, expectedFingerprint: peer.certFingerprint, me: me)
             activeClient = client
 
-            let (dtos, files) = try describe(items)
+            let (dtos, files) = try describe(items, textAsMessage: settings.textAsMessage)
             phase = .waitingForAccept(peer.alias)
             guard let session = try await client.prepareUpload(files: dtos, pin: peer.pin) else {
                 ShareDonation.donate(peer)
@@ -85,10 +86,10 @@ final class SendEngine: ObservableObject {
 
     struct FileRef { let id: String; let url: URL; let size: Int64 }
 
-    /// A single text item becomes a LocalSend "message" (text/plain + preview, no upload).
-    /// Text mixed with files is sent as a .txt file.
-    func describe(_ items: [OutgoingItem]) throws -> ([LSFileDTO], [FileRef]) {
-        if items.count == 1, case .text(let s) = items[0] {
+    /// A single text item becomes a LocalSend "message" (text/plain + preview, no upload), unless the
+    /// "send as message" setting is off. Text mixed with files is always sent as a .txt file.
+    func describe(_ items: [OutgoingItem], textAsMessage: Bool = true) throws -> ([LSFileDTO], [FileRef]) {
+        if textAsMessage, items.count == 1, case .text(let s) = items[0] {
             let data = Data(s.utf8)
             return ([LSFileDTO(id: UUID().uuidString, fileName: "\(UUID().uuidString).txt",
                                size: Int64(data.count), fileType: "text/plain", sha256: nil, preview: s)], [])

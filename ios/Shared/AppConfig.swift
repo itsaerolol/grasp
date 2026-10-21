@@ -9,7 +9,4 @@ enum AppConfig {
     static let deviceModel = "iPhone"
 
     static var defaults: UserDefaults { UserDefaults(suiteName: appGroup)! }
-
-    /// JPEG quality for HEIC conversion.
-    static let jpegQuality: CGFloat = 0.9
 }

@@ -65,11 +65,12 @@ Shared/                      Compiled into both targets
   LSSessionDelegate.swift    Server pin / TOFU + client cert challenge + upload progress
   LSClient.swift             register / info / prepare-upload / upload (streamed) / cancel
   Discovery.swift            /24 HTTP scan, resolve pinned PC after DHCP changes
-  Payload.swift              NSItemProvider → files/text, HEIC→JPG, folder→.zip
+  Payload.swift              NSItemProvider → files/text, HEIC→JPG, folder→.zip, per SendSettings
+  SendSettings.swift         The Settings screen's options, shared with the extension via the App Group
   ShareDonation.swift        INSendMessageIntent donation (top-row suggestion)
   SendEngine.swift           One share = one session; drives extension UI state
   PeerStore.swift            Paired PC in App Group defaults
-App/                         Pairing UI: scan, pair, test message, unpair
+App/                         Pairing UI: scan, pair, test message, unpair; Settings screen
 ShareExtension/              ShareViewController + status sheet
 windows/                     Grasp for Windows (Cargo workspace)
   core/                      grasp-core: the LocalSend receiver (axum + rustls), no UI; `Ui` trait is the seam

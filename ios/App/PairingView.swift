@@ -156,6 +156,7 @@ struct PairingView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showFinder = false
     @State private var showManual = false
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
@@ -179,6 +180,7 @@ struct PairingView: View {
                 .presentationDetents([.medium])
         }
         .sheet(isPresented: $showManual) { ManualIPSheet(model: model) }
+        .sheet(isPresented: $showSettings) { SettingsView() }
         .task { await model.boot() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, model.paired != nil, !model.sending { Task { await model.refreshStatus() } }
@@ -224,6 +226,7 @@ struct PairingView: View {
             Button("Enter IP address", systemImage: "network") { showManual = true }
             Button("Copy this iPhone's ID", systemImage: "iphone") { model.copyIdentity() }
                 .disabled(model.me == nil)
+            Button("Settings", systemImage: "gearshape") { showSettings = true }
             if model.paired != nil {
                 Divider()
                 Button("Unpair", systemImage: "xmark.circle", role: .destructive) { model.unpair() }

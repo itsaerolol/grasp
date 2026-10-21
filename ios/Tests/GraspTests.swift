@@ -1,6 +1,7 @@
 import XCTest
 import CryptoKit
 import UniformTypeIdentifiers
+import ImageIO
 
 /// Shared/ is compiled straight into this bundle (same as the app and the extension), so no @testable import.
 final class FingerprintTests: XCTestCase {
@@ -349,5 +350,120 @@ final class ZipFolderTests: XCTestCase {
         let file = dir.appendingPathComponent("a.pdf")
         try Data("x".utf8).write(to: file)
         XCTAssertEqual(try PayloadBuilder.zipIfDirectory(file, workDir: dir), file)
+    }
+}
+
+final class SendSettingsTests: XCTestCase {
+    private var suite: String!
+    private var defaults: UserDefaults!
+
+    override func setUpWithError() throws {
+        suite = "grasp-test-\(UUID().uuidString)"
+        defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    }
+    override func tearDownWithError() throws { defaults.removePersistentDomain(forName: suite) }
+
+    func testFreshDefaultsMatchTodaysBehaviour() {
+        let s = SendSettings.load(from: defaults)
+        XCTAssertEqual(s, .defaults)
+        XCTAssertEqual(s.photoFormat, .jpg)
+        XCTAssertTrue(s.textAsMessage)
+        XCTAssertEqual(s.folderMode, .zip)
+        XCTAssertFalse(s.stripLocation)
+    }
+
+    func testSaveLoadRoundTripAndQualityIsClamped() {
+        var s = SendSettings()
+        s.photoFormat = .original; s.jpegQuality = 0.7; s.stripLocation = true
+        s.namePhotosByDate = true; s.textAsMessage = false; s.folderMode = .files
+        s.save(to: defaults)
+        XCTAssertEqual(SendSettings.load(from: defaults), s)
+
+        defaults.set(5.0, forKey: "settings.jpegQuality")
+        XCTAssertEqual(SendSettings.load(from: defaults).jpegQuality, 1)
+    }
+}
+
+@MainActor
+final class SettingsBehaviourTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("grasp-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: dir) }
+
+    private func heic(_ name: String) throws -> URL {
+        let src = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "sample", withExtension: "heic"))
+        let dest = dir.appendingPathComponent(name)
+        try FileManager.default.copyItem(at: src, to: dest)
+        return dest
+    }
+
+    /// A JPG with a GPS block, made from the HEIC fixture.
+    private func jpgWithLocation() throws -> URL {
+        let src = try XCTUnwrap(CGImageSourceCreateWithURL(try heic("src.heic") as CFURL, nil))
+        let out = dir.appendingPathComponent("located.jpg")
+        let dst = try XCTUnwrap(CGImageDestinationCreateWithURL(out as CFURL, UTType.jpeg.identifier as CFString, 1, nil))
+        let gps: [CFString: Any] = [kCGImagePropertyGPSLatitude: 51.5, kCGImagePropertyGPSLatitudeRef: "N",
+                                    kCGImagePropertyGPSLongitude: 0.12, kCGImagePropertyGPSLongitudeRef: "W"]
+        CGImageDestinationAddImageFromSource(dst, src, 0, [kCGImagePropertyGPSDictionary: gps] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(dst))
+        XCTAssertNotNil(gpsBlock(out), "fixture should carry GPS")
+        return out
+    }
+
+    private func gpsBlock(_ url: URL) -> [CFString: Any]? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else { return nil }
+        return props[kCGImagePropertyGPSDictionary] as? [CFString: Any]
+    }
+
+    func testOriginalFormatKeepsHEIC() throws {
+        var s = SendSettings(); s.photoFormat = .original
+        guard case .file(let url, let name, _, _) = try PayloadBuilder.processPhoto(try heic("IMG_1.heic"), settings: s)
+        else { return XCTFail() }
+        XCTAssertEqual(name, "IMG_1.heic")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testRemoveLocationStripsGPSAndKeepsTheName() throws {
+        let jpg = try jpgWithLocation()
+        var s = SendSettings(); s.stripLocation = true
+        guard case .file(let url, let name, _, _) = try PayloadBuilder.processPhoto(jpg, settings: s)
+        else { return XCTFail() }
+        XCTAssertEqual(name, "located.jpg")
+        XCTAssertNil(gpsBlock(url))
+    }
+
+    func testNameByDateRenamesAndKeepsExtension() throws {
+        var s = SendSettings(); s.namePhotosByDate = true
+        guard case .file(_, let name, _, _) = try PayloadBuilder.processPhoto(try heic("IMG_2.heic"), settings: s)
+        else { return XCTFail() }
+        XCTAssertTrue(name.hasPrefix("Photo "), name)
+        XCTAssertTrue(name.hasSuffix(".jpg"), name)   // converted first, then named
+    }
+
+    func testTextAsMessageOffSendsNoteTxt() throws {
+        let (dtos, refs) = try SendEngine().describe([.text("https://example.com/")], textAsMessage: false)
+        XCTAssertEqual(dtos.count, 1)
+        XCTAssertEqual(dtos[0].fileName, "Note.txt")
+        XCTAssertNil(dtos[0].preview)
+        XCTAssertEqual(refs.count, 1)
+    }
+
+    func testFolderAsSeparateFilesIsFlattenedWithNumberedClashes() throws {
+        let folder = dir.appendingPathComponent("Trip")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("day2"), withIntermediateDirectories: true)
+        try Data("1".utf8).write(to: folder.appendingPathComponent("notes.txt"))
+        try Data("2".utf8).write(to: folder.appendingPathComponent("day2/notes.txt"))
+        try Data("h".utf8).write(to: folder.appendingPathComponent(".hidden"))
+        let out = dir.appendingPathComponent("out")
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let files = try PayloadBuilder.pack(folder, name: nil, workDir: out, mode: .files)
+        XCTAssertEqual(files.map(\.lastPathComponent).sorted(), ["notes 1.txt", "notes.txt"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("day2/notes.txt").path))
     }
 }

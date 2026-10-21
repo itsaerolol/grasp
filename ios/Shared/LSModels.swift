@@ -65,6 +65,8 @@ enum LSError: LocalizedError {
     case pairingNotOpen
     case wrongCode(attemptsLeft: Int?)
     case pairingLocked
+    /// "Remove location" is on but a photo couldn't be rewritten without it; never send it with GPS.
+    case locationNotRemoved(String)
 
     var errorDescription: String? {
         switch self {
@@ -83,6 +85,8 @@ enum LSError: LocalizedError {
         case .wrongCode(let left):
             return left.map { "Wrong code. \($0) \($0 == 1 ? "try" : "tries") left." } ?? "Wrong code."
         case .pairingLocked: return "Too many wrong codes. Choose Pair iPhone on the PC again."
+        case .locationNotRemoved(let name):
+            return "Couldn't remove the location from \(name). Turn off Remove location in Grasp's settings to send it."
         }
     }
 
