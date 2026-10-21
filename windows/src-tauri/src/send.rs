@@ -63,7 +63,6 @@ pub fn send_paths(app: &AppHandle, paths: Vec<PathBuf>) {
 
 #[tauri::command]
 pub async fn send_files(app: AppHandle) -> Result<(), String> {
-    crate::menu::hide(&app);
     let picked = app.dialog().file().set_title("Send to iPhone").blocking_pick_files();
     let paths: Vec<PathBuf> = picked.unwrap_or_default().into_iter().filter_map(|p| p.into_path().ok()).collect();
     send_paths(&app, paths);
@@ -74,7 +73,6 @@ pub async fn send_files(app: AppHandle) -> Result<(), String> {
 /// own clipboard.
 #[tauri::command]
 pub fn send_clipboard(app: AppHandle, shell: State<'_, Arc<Shell>>) {
-    crate::menu::hide(&app);
     if !ready(&app, &shell) {
         return;
     }

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Grasp</title>
 <style>
-  /* Same always-dark tokens as the toast (index.html), laid out like an iOS grouped list. */
+  /* Same always-dark tokens as the toast (index.html), laid out like an iOS grouped list in a normal window. */
   :root {
     color-scheme: dark;
     --card: rgba(38, 38, 40, 0.98);
@@ -22,21 +22,17 @@
     --bad: #ff6a61;
   }
   * { box-sizing: border-box; margin: 0; }
-  html, body { background: transparent; overflow: hidden; }
+  html, body { background: #1c1c1e; overflow: hidden; }
   body {
     font: 13.5px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
     color: var(--text); -webkit-user-select: none; user-select: none; cursor: default;
   }
-  /* Transparent margin holds the shadow (see the toast for why it must fit). */
-  .stage { padding: 10px; }
-  .card {
-    width: 320px; padding: 14px 12px 12px; border-radius: 18px;
-    background: var(--card); border: 1px solid var(--border);
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
-  }
+  /* The page fills the window; its measured height sizes the window (menu_resize). */
+  .stage { padding: 18px 18px 20px; }
+  .card { width: 100%; }
 
-  .head { display: flex; align-items: center; gap: 10px; padding: 0 4px 12px; }
-  .head svg { width: 34px; height: 34px; flex: none; }
+  .head { display: flex; align-items: center; gap: 12px; padding: 0 4px 14px; }
+  .head svg { width: 40px; height: 40px; flex: none; }
   .head .text { flex: 1; min-width: 0; }
   .title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
   .sub { font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -89,7 +85,7 @@
 </style>
 </head>
 <body>
-<div class="stage"><div class="card" id="card" role="menu" aria-label="Grasp"></div></div>
+<div class="stage"><div class="card" id="card" aria-label="Grasp"></div></div>
 <script>
 'use strict';
 const { listen } = window.__TAURI__.event;

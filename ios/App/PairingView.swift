@@ -212,10 +212,10 @@ struct PairingView: View {
 
     @ViewBuilder private func pairedSection(_ peer: Peer) -> some View {
         Section {
-            PairedPCRow(peer: peer, reachable: model.reachable)
-                .swipeActions(edge: .trailing) {
-                    Button("Unpair", role: .destructive) { model.unpair() }
-                }
+            // The paired PC as the screen's hero, on the background rather than in a cell.
+            PairedPCHero(peer: peer, reachable: model.reachable)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
                 .contextMenu {
                     Button("Copy ID", systemImage: "doc.on.doc") { model.copyPCFingerprint() }
                     Button("Unpair", systemImage: "xmark.circle", role: .destructive) { model.unpair() }
@@ -263,26 +263,37 @@ struct PairingView: View {
 
 // MARK: - Components
 
-private struct PairedPCRow: View {
+/// The paired PC, centred: a large tile, its name, its address and the live status. Long-press for Copy ID /
+/// Unpair (also in the ⋯ menu).
+private struct PairedPCHero: View {
     let peer: Peer
     let reachable: Bool?
 
     var body: some View {
-        HStack(spacing: 14) {
+        VStack(spacing: 14) {
             Image(systemName: "desktopcomputer")
-                .font(.title2)
+                .font(.system(size: 46, weight: .regular))
                 .foregroundStyle(.tint)
-                .frame(width: 48, height: 48)
-                .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(peer.alias).font(.headline).lineLimit(1)
-                Text(peer.host).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                .frame(width: 104, height: 104)
+                .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .opacity(reachable == false ? 0.55 : 1)
+            VStack(spacing: 4) {
+                Text(peer.alias)
+                    .font(.title.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text(peer.host)
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 8)
             StatusChip(reachable: reachable)
         }
-        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
+        .animation(.snappy, value: reachable)
         .accessibilityElement(children: .combine)
+        .accessibilityHint("Touch and hold for Copy ID or Unpair")
     }
 }
 

@@ -108,13 +108,13 @@ fn main() {
                 });
             }
 
-            // Tray: left or right click opens the menu window (no native menu).
+            // Tray: left or right click brings up the Grasp window (no native menu).
             let mut tray = TrayIconBuilder::with_id("grasp")
                 .tooltip(format!("Grasp: receiving as {alias}"))
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { rect, button_state: MouseButtonState::Up, .. } = event {
-                        menu::toggle(tray.app_handle(), &rect);
+                    if let TrayIconEvent::Click { button_state: MouseButtonState::Up, .. } = event {
+                        menu::open(tray.app_handle());
                     }
                 });
             if let Some(icon) = app.default_window_icon() {
@@ -131,11 +131,12 @@ fn main() {
             // Drops on the toast's drop zone arrive through droptarget.rs (an overlay window while it shows).
             dragwatch::start(app.handle().clone());
 
-            // The menu behaves like a popup: it goes away when you click elsewhere.
+            // Closing the window hides it to the tray: Grasp has to keep running to receive. Quit is in the window.
             if let Some(w) = app.get_webview_window("menu") {
                 let w2 = w.clone();
                 w.on_window_event(move |e| {
-                    if let WindowEvent::Focused(false) = e {
+                    if let WindowEvent::CloseRequested { api, .. } = e {
+                        api.prevent_close();
                         let _ = w2.hide();
                     }
                 });
