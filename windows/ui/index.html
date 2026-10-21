@@ -181,8 +181,8 @@ function markup() {
       return `<div class="row"><div class="glyph">${CHECK}</div><div class="text">
           <div class="title">Received</div><div class="sub">${esc(c.summary)}</div></div></div>`;
     case 'paired':
-      return `<div class="row"><div class="glyph">${CHECK}</div><div class="text">
-          <div class="title">Paired</div><div class="sub">${esc(c.name)}</div></div></div>`;
+      return `<div class="row"><div class="glyph">${c.title ? APP_ICON : CHECK}</div><div class="text">
+          <div class="title">${esc(c.title ?? 'Paired')}</div><div class="sub">${esc(c.name)}</div></div></div>`;
     case 'copied':
       return `<div class="row"><div class="glyph">${CHECK}</div><div class="text">
           <div class="title">${c.copied ? 'Copied' : 'Couldn’t copy'}${c.opened ? ' · Opened in browser' : ''}</div></div></div>
@@ -355,6 +355,10 @@ listen('ui', ({ payload: p }) => {
     }
     case 'paired':
       show({ kind: 'paired', id: 'paired-' + p.device.fingerprint, name: p.device.alias });
+      break;
+    // The phone unpaired this PC itself (an unpair from this PC's window needs no toast).
+    case 'unpaired':
+      if (p.byPhone) show({ kind: 'paired', id: 'unpaired-' + p.device.fingerprint, title: 'Unpaired by the iPhone', name: p.device.alias });
       break;
     case 'progress':
       if (current && current.id === p.id && (current.kind === 'receiving' || current.kind === 'incoming')) {

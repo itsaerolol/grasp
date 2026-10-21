@@ -92,6 +92,30 @@ final class LSClient: @unchecked Sendable {
         } catch { throw mapTransport(error) }
     }
 
+    /// Grasp for Windows (grasp >= 3): does the PC still list this phone as paired? nil when the PC can't say.
+    func pairStatus() async throws -> Bool? {
+        do {
+            let (data, resp) = try await session.data(from: url("/pair", base: LS.graspApi))
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            if status == 404 || status == 405 { return nil }
+            _ = try check(resp, data)
+            return ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["paired"] as? Bool
+        } catch { throw mapTransport(error) }
+    }
+
+    /// Unpair in the app: tells the PC to forget this phone too. Short timeout; a PC that isn't Grasp for
+    /// Windows (404) has nothing to forget.
+    func unpairRemote() async throws {
+        var req = URLRequest(url: url("/unpair", base: LS.graspApi))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 3
+        do {
+            let (data, resp) = try await session.data(for: req)
+            if (resp as? HTTPURLResponse)?.statusCode == 404 { return }
+            _ = try check(resp, data)
+        } catch { throw mapTransport(error) }
+    }
+
     /// Cheap liveness + identity probe for the pinned PC.
     func info() async throws -> LSDeviceInfo {
         do {

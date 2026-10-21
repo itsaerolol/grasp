@@ -47,9 +47,12 @@ check "outbox refused before pairing" "! send --fetch '$T/got' && grep -q 'Not p
 check "wrong code refused with attempts left" "! send --pair 111 && grep -q 'Wrong code (4 left)' '$T/send.log'"
 check "pairing needs a client cert" "! send --no-client-cert --pair 427 && grep -q 'Client certificate required' '$T/send.log'"
 check "right code pairs" "send --pair 427 && grep -q 'paired with Mock PC' '$T/send.log'"
-check "code is single-use" "! send --pair 427 && grep -q 'not open' '$T/send.log'"
+check "code is single-use" "! send --cert '$T/other-phone' --pair 427 && grep -q 'not open' '$T/send.log'"
+check "same phone again -> already paired" "send --pair 427 && grep -q 'already paired with Mock PC' '$T/send.log'"
+check "pair status: paired" "send --pair-status && grep -q 'pair status: paired' '$T/send.log'"
 check "paired phone pulls the outbox (folder kept)" "send --fetch '$T/got' && cmp -s '$T/photo.jpg' '$T/got/photo.jpg' && cmp -s '$T/out/Trip/b.jpg' '$T/got/Trip/b.jpg' && grep -q 'TEXT: https://whiteframe.cc' '$T/send.log'"
 check "another phone can't pull" "! send --cert '$T/other-phone' --fetch '$T/got' && grep -q 'Not paired' '$T/send.log'"
+check "phone unpairs -> PC forgets it, its sends are refused" "send --unpair && send --pair-status && grep -q 'not paired' '$T/send.log' && ! send --text hi && grep -q 'Unpaired' '$T/send.log'"
 stop_mock
 
 echo "---- $PASS passed, $FAIL failed"

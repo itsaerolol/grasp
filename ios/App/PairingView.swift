@@ -22,6 +22,8 @@ final class PairingModel: ObservableObject {
     @Published var codeTarget: Discovery.Found?
     @Published var codeError: String?
     @Published var checkingCode = false
+    /// Why the paired PC isn't reachable, shown under it (identity changed, or nothing at its address).
+    @Published var problem: String?
     private var toastTask: Task<Void, Never>?
 
     func boot() async {
@@ -33,12 +35,38 @@ final class PairingModel: ObservableObject {
 
     /// One pinned GET /info at the last known address. No scanning. `quiet` keeps the current chip while
     /// checking (the 5-second live check), instead of flashing "checking".
+    /// Also asks a Grasp for Windows PC whether it still lists this phone: if it unpaired the phone, the phone
+    /// drops it too, so both sides always agree.
     func refreshStatus(quiet: Bool = false) async {
+        await deliverPendingUnpairs()
         guard let me, let peer = paired else { return }
         if !quiet { reachable = nil }
         let direct = LSClient(host: peer.host, port: peer.port, expectedFingerprint: peer.certFingerprint,
                               me: me, connectTimeout: 2)
-        reachable = (try? await direct.info()) != nil
+        do {
+            let info = try await direct.info()
+            guard paired?.id == peer.id else { return }
+            reachable = true
+            problem = nil
+            if info.supportsDurablePairing, try await direct.pairStatus() == false { droppedByPC(peer) }
+        } catch LSError.fingerprintMismatch {
+            reachable = false
+            problem = "\(peer.alias)'s identity changed (Grasp reinstalled or reset there). Unpair, then pair again."
+        } catch {
+            guard paired?.id == peer.id else { return }
+            reachable = false
+            problem = "Nothing answering at \(peer.host). Is Grasp running? If the PC's address changed, add it again with Enter IP address."
+        }
+    }
+
+    /// The PC unpaired this phone: forget it here too.
+    private func droppedByPC(_ peer: Peer) {
+        guard paired?.id == peer.id else { return }
+        PeerStore.remove(peer)
+        ShareDonation.deleteAll()
+        paired = nil; reachable = nil; problem = nil
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        show(.error, "\(peer.alias) unpaired this iPhone. Pair again to send to it.")
     }
 
     /// First scan also triggers the iOS Local Network permission prompt.
@@ -63,7 +91,17 @@ final class PairingModel: ObservableObject {
 
     /// Grasp for Windows pairs by a code shown on the PC; stock LocalSend is trusted on first use.
     func pair(_ f: Discovery.Found) {
-        if f.info.supportsCodePairing { codeError = nil; codeTarget = f } else { save(f) }
+        if paired?.certFingerprint == f.certFingerprint {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            return show(.error, "Already paired with \(f.info.alias).")
+        }
+        guard f.info.supportsCodePairing else { return save(f) }
+        guard f.info.supportsDurablePairing, let me else { codeError = nil; codeTarget = f; return }
+        // The PC may still list this phone (unpaired here while the PC was off): then the pairing stands.
+        Task {
+            let client = LSClient(host: f.host, expectedFingerprint: f.certFingerprint, me: me, connectTimeout: 3)
+            if (try? await client.pairStatus()) == true { save(f, again: true) } else { codeError = nil; codeTarget = f }
+        }
     }
 
     /// Returns true when the PC accepted the code.
@@ -77,6 +115,10 @@ final class PairingModel: ObservableObject {
             codeTarget = nil
             save(f)
             return true
+        } catch LSError.alreadyPaired {
+            codeTarget = nil
+            save(f, again: true)
+            return true
         } catch {
             UINotificationFeedbackGenerator().notificationOccurred(.error)
             codeError = error.localizedDescription
@@ -84,23 +126,55 @@ final class PairingModel: ObservableObject {
         }
     }
 
-    private func save(_ f: Discovery.Found) {
+    private func save(_ f: Discovery.Found, again: Bool = false) {
         let peer = Peer(alias: f.info.alias, host: f.host, port: LS.port, certFingerprint: f.certFingerprint,
                         deviceModel: f.info.deviceModel, pin: nil, lastSeen: Date())
-        // One default PC (locked decision): pairing a different PC replaces the old one.
-        if let old = paired, old.id != peer.id { PeerStore.remove(old); ShareDonation.deleteAll() }
+        // One default PC (locked decision): pairing a different PC replaces the old one, and the old PC is told,
+        // so it doesn't go on listing this phone.
+        if let old = paired, old.id != peer.id {
+            PeerStore.remove(old); ShareDonation.deleteAll()
+            Task { await tellUnpaired(old, reportFailure: false) }
+        }
+        PeerStore.removePendingUnpair(id: peer.id)   // paired again: a pending unpair must not undo it
         PeerStore.save(peer, makeDefault: true)
         ShareDonation.donate(peer)
-        paired = peer; reachable = true
+        paired = peer; reachable = true; problem = nil
         found.removeAll { $0.certFingerprint == f.certFingerprint }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        show(.success, "Paired with \(peer.alias)")
+        show(.success, again ? "Paired again with \(peer.alias)" : "Paired with \(peer.alias)")
     }
 
+    /// Unpairs here and tells the PC, so it stops listing (and accepting) this phone. If the PC is off, it's
+    /// told the next time the app reaches it.
     func unpair() {
-        if let p = paired { PeerStore.remove(p) }
+        guard let p = paired else { return }
+        PeerStore.remove(p)
         ShareDonation.deleteAll()
-        paired = nil; reachable = nil; found = []; scanned = false
+        paired = nil; reachable = nil; problem = nil; found = []; scanned = false
+        Task { await tellUnpaired(p, reportFailure: true) }
+    }
+
+    private func tellUnpaired(_ p: Peer, reportFailure: Bool) async {
+        guard let me else { return }
+        do {
+            try await LSClient(host: p.host, port: p.port, expectedFingerprint: p.certFingerprint, me: me,
+                               connectTimeout: 3).unpairRemote()
+        } catch LSError.fingerprintMismatch {
+            return   // a different PC answers there now: nothing to tell
+        } catch {
+            PeerStore.addPendingUnpair(p)
+            if reportFailure { show(.error, "Unpaired here. \(p.alias) didn't answer; it'll be told next time it's reachable.") }
+        }
+    }
+
+    private func deliverPendingUnpairs() async {
+        guard let me else { return }
+        for p in PeerStore.pendingUnpairs where p.id != paired?.id {
+            let client = LSClient(host: p.host, port: p.port, expectedFingerprint: p.certFingerprint, me: me, connectTimeout: 2)
+            do { try await client.unpairRemote(); PeerStore.removePendingUnpair(id: p.id) }
+            catch LSError.fingerprintMismatch { PeerStore.removePendingUnpair(id: p.id) }
+            catch { continue }
+        }
     }
 
     func sendTest() async {
@@ -123,7 +197,11 @@ final class PairingModel: ObservableObject {
             show(.success, "Delivered to \(p.alias)")
         } catch {
             UINotificationFeedbackGenerator().notificationOccurred(.error)
-            switch error { case LSError.unreachable, LSError.pcNotAnswering: reachable = false; default: break }
+            switch error {
+            case LSError.unreachable, LSError.pcNotAnswering: reachable = false
+            case LSError.unpairedByPC: droppedByPC(peer); return
+            default: break
+            }
             show(.error, error.localizedDescription)
         }
     }
@@ -194,7 +272,9 @@ struct PairingView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, model.paired != nil, !model.sending { Task { await model.refreshStatus() } }
         }
-        .onChange(of: model.paired) { _, new in if new != nil { showFinder = false; showManual = false } }
+        .onChange(of: model.paired) { _, new in
+            if new != nil { showFinder = false; showManual = false } else { inbox.reset() }
+        }
         // Live status + Windows -> iPhone: while the app is on screen, check the PC every 5 seconds (one pinned
         // GET /info, so the chip follows the PC going off and on) and collect whatever it queued. Restarts when
         // the paired PC, the identity or the foreground state changes; stops in the background.
@@ -213,7 +293,7 @@ struct PairingView: View {
     @ViewBuilder private func pairedSection(_ peer: Peer) -> some View {
         Section {
             // The paired PC as the screen's hero, on the background rather than in a cell.
-            PairedPCHero(peer: peer, reachable: model.reachable)
+            PairedPCHero(peer: peer, reachable: model.reachable, problem: model.problem)
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
                 .contextMenu {
@@ -268,6 +348,7 @@ struct PairingView: View {
 private struct PairedPCHero: View {
     let peer: Peer
     let reachable: Bool?
+    let problem: String?
 
     var body: some View {
         VStack(spacing: 14) {
@@ -287,6 +368,13 @@ private struct PairedPCHero: View {
                     .foregroundStyle(.secondary)
             }
             StatusChip(reachable: reachable)
+            if reachable == false, let problem {
+                Text(problem)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 8)

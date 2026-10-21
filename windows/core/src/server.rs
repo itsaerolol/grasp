@@ -40,9 +40,10 @@ use crate::{
 pub const API: &str = "/api/localsend/v2";
 pub const VERSION: &str = "2.2";
 /// Grasp-only extension, advertised as `"grasp": N` in /info and /register. 1: code pairing.
-/// 2: also the outbox (Windows -> iPhone, the phone pulls; see outbox.rs).
+/// 2: also the outbox (Windows -> iPhone, the phone pulls; see outbox.rs). 3: also durable pairing
+/// (`GET .../pair` = is this phone paired, `POST .../unpair`, removed phones refused; see pairing.rs).
 pub const GRASP_API: &str = "/api/grasp/v1";
-pub const GRASP_LEVEL: u8 = 2;
+pub const GRASP_LEVEL: u8 = 3;
 /// How long the toast waits for the human. Silence is a rejection, never an acceptance.
 /// (The sender's own prepare-upload timeout is 600s; this is deliberately much shorter.)
 const DECISION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -209,8 +210,9 @@ impl Handle {
     pub fn paired_devices(&self) -> Vec<PairedDevice> {
         self.0.pairing.devices()
     }
+    /// The X in the window: forget the phone; the phone notices within seconds and drops the PC too.
     pub fn unpair(&self, fingerprint: &str) {
-        self.0.pairing.unpair(fingerprint);
+        unpair_phone(&self.0, fingerprint, false);
     }
 
     /// Queues files and folders for the paired iPhone to pull. Returns how many files were queued.
@@ -297,7 +299,8 @@ pub fn build(
         .route(&format!("{API}/prepare-upload"), post(prepare_upload))
         .route(&format!("{API}/upload"), post(upload))
         .route(&format!("{API}/cancel"), post(cancel))
-        .route(&format!("{GRASP_API}/pair"), post(pair_handler))
+        .route(&format!("{GRASP_API}/pair"), post(pair_handler).get(pair_status))
+        .route(&format!("{GRASP_API}/unpair"), post(unpair_handler))
         .route(&format!("{GRASP_API}/outbox"), get(outbox_list))
         .route(&format!("{GRASP_API}/outbox/file"), get(outbox_file))
         .route(&format!("{GRASP_API}/outbox/done"), post(outbox_done))
@@ -351,7 +354,40 @@ async fn pair_handler(
         )
             .into_response(),
         PairOutcome::Locked => json_error(StatusCode::TOO_MANY_REQUESTS, "Too many wrong codes"),
+        PairOutcome::AlreadyPaired(_) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "message": "Already paired", "alreadyPaired": true, "alias": s.info.alias })),
+        )
+            .into_response(),
     }
+}
+
+/// Is the phone presenting this cert paired? The phone asks every few seconds and drops the PC when not.
+async fn pair_status(State(s): State<AppState>, Extension(PeerCert(fp)): Extension<PeerCert>) -> Response {
+    let Some(fp) = fp else {
+        return json_error(StatusCode::BAD_REQUEST, "Client certificate required");
+    };
+    Json(serde_json::json!({ "paired": s.pairing.is_paired(&fp), "alias": s.info.alias })).into_response()
+}
+
+/// The phone unpaired this PC: forget it here too.
+async fn unpair_handler(State(s): State<AppState>, Extension(PeerCert(fp)): Extension<PeerCert>) -> Response {
+    let Some(fp) = fp else {
+        return json_error(StatusCode::BAD_REQUEST, "Client certificate required");
+    };
+    unpair_phone(&s, &fp, true);
+    StatusCode::OK.into_response()
+}
+
+/// One place for both sides' unpair. With no paired phone left, nothing can collect the outbox, so it's
+/// cleared (the toast and menu are told).
+fn unpair_phone(s: &Inner, fingerprint: &str, by_phone: bool) {
+    let Some(device) = s.pairing.unpair(fingerprint) else { return };
+    let outbox_cleared = s.pairing.devices().is_empty() && !s.outbox.is_empty();
+    if outbox_cleared {
+        s.outbox.clear();
+    }
+    s.ui.event(UiEvent::Unpaired { device, by_phone, outbox_cleared });
 }
 
 /// The outbox is only for a phone paired by code: its client cert fingerprint is the proof.
@@ -495,6 +531,15 @@ async fn prepare_upload(
         return json_error(StatusCode::BAD_REQUEST, "No files provided");
     }
     let from = if req.info.alias.trim().is_empty() { "Unknown device".to_string() } else { req.info.alias.clone() };
+
+    // A phone unpaired on either side can't send until it pairs by code again: no prompt, no toast.
+    if fp.as_deref().is_some_and(|f| s.pairing.is_removed(f)) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "message": "Unpaired: pair this iPhone with the PC again", "unpaired": true })),
+        )
+            .into_response();
+    }
 
     // A text message is exactly one text/plain file carrying its content in `preview`.
     // It goes through the same Accept gate as files; only the outcome differs (204, no upload).

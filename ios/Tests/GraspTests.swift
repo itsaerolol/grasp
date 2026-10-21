@@ -513,3 +513,33 @@ final class InboxPathsTests: XCTestCase {
         XCTAssertFalse(InboxPaths.isPhotoOrVideo(URL(fileURLWithPath: "/x/noext")))
     }
 }
+
+final class PairingResponseTests: XCTestCase {
+    func testUnpairedPhoneIsToldSoNotJustRejected() {
+        guard case .unpairedByPC = LSError.from(status: 403, body: #"{"message":"Unpaired","unpaired":true}"#) else {
+            return XCTFail("403 with unpaired should map to unpairedByPC")
+        }
+        guard case .rejected = LSError.from(status: 403, body: #"{"message":"Rejected"}"#) else {
+            return XCTFail("a plain 403 is still a rejection")
+        }
+    }
+
+    func testAlreadyPairedIsNotPairingNotOpen() {
+        let body = Data(#"{"message":"Already paired","alreadyPaired":true,"alias":"TEMPEST"}"#.utf8)
+        guard case .alreadyPaired(let alias) = LSError.fromPairing(status: 409, body: body) else {
+            return XCTFail("409 alreadyPaired should map to alreadyPaired")
+        }
+        XCTAssertEqual(alias, "TEMPEST")
+        guard case .pairingNotOpen = LSError.fromPairing(status: 409, body: Data(#"{"message":"Pairing is not open on the PC"}"#.utf8)) else {
+            return XCTFail("a plain 409 is still pairing-not-open")
+        }
+    }
+
+    func testDurablePairingNeedsGraspThree() {
+        var info = LSDeviceInfo(alias: "PC", version: "2.2")
+        info.grasp = 2
+        XCTAssertFalse(info.supportsDurablePairing)
+        info.grasp = 3
+        XCTAssertTrue(info.supportsDurablePairing && info.supportsOutbox && info.supportsCodePairing)
+    }
+}

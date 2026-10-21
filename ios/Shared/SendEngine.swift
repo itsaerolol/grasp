@@ -86,6 +86,11 @@ final class SendEngine: ObservableObject {
         } catch is CancellationError {
             if phase != .cancelling { phase = .failed("Cancelled") }
         } catch {
+            // The PC unpaired this phone: forget it here too, so the app shows the pairing screen.
+            if case LSError.unpairedByPC = error, let gone = targetPeerId.flatMap(PeerStore.peer(id:)) ?? PeerStore.defaultPeer {
+                PeerStore.remove(gone)
+                ShareDonation.deleteAll()
+            }
             // Cancel tapped: the stopped upload's error is expected, keep showing "Cancelling…".
             if phase != .cancelling { phase = .failed(error.localizedDescription) }
         }

@@ -30,6 +30,12 @@ final class Inbox: ObservableObject {
     @Published private(set) var availability: Availability = .unknown
     private var pulling = false
 
+    /// Unpaired: what came from that PC no longer belongs on screen.
+    func reset() {
+        recent = []
+        availability = .unknown
+    }
+
     /// Pulls everything the PC has queued. Silent when there's nothing or the PC is off.
     func pull(peer: Peer, me: ClientIdentity.Material, report: (PairingModel.Toast.Kind, String) -> Void) async {
         guard !pulling else { return }

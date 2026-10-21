@@ -40,4 +40,21 @@ enum PeerStore {
     static func remove(_ peer: Peer) {
         AppConfig.defaults.set(try? JSONEncoder().encode(all.filter { $0.id != peer.id }), forKey: key)
     }
+
+    // PCs this phone unpaired while they were off: they still list the phone until told (the app retries).
+    private static let pendingKey = "peers.pendingUnpair"
+
+    static var pendingUnpairs: [Peer] {
+        guard let data = AppConfig.defaults.data(forKey: pendingKey) else { return [] }
+        return (try? JSONDecoder().decode([Peer].self, from: data)) ?? []
+    }
+
+    static func addPendingUnpair(_ peer: Peer) {
+        let list = pendingUnpairs.filter { $0.id != peer.id } + [peer]
+        AppConfig.defaults.set(try? JSONEncoder().encode(list), forKey: pendingKey)
+    }
+
+    static func removePendingUnpair(id: String) {
+        AppConfig.defaults.set(try? JSONEncoder().encode(pendingUnpairs.filter { $0.id != id }), forKey: pendingKey)
+    }
 }

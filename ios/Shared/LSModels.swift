@@ -7,7 +7,8 @@ enum LS {
     static let version = "2.2"
     static let api = "/api/localsend/v2"
     /// Grasp for Windows extension, advertised as `grasp: N` in /info and /register. 1: code pairing.
-    /// 2: also the outbox (Windows -> iPhone: this app pulls what the PC queued).
+    /// 2: also the outbox (Windows -> iPhone: this app pulls what the PC queued). 3: also durable pairing
+    /// (GET /pair = is this phone paired, POST /unpair; a phone unpaired on either side is refused).
     static let graspApi = "/api/grasp/v1"
 }
 
@@ -28,6 +29,7 @@ struct LSDeviceInfo: Codable, Equatable, Sendable {
 
     var supportsCodePairing: Bool { (grasp ?? 0) >= 1 }
     var supportsOutbox: Bool { (grasp ?? 0) >= 2 }
+    var supportsDurablePairing: Bool { (grasp ?? 0) >= 3 }
 }
 
 /// Windows -> iPhone: one thing Grasp for Windows queued for this phone (GET /api/grasp/v1/outbox).
@@ -89,6 +91,10 @@ enum LSError: LocalizedError {
     case notPairedByCode
     /// The transfer was cancelled on the PC (the X on its toast): 410. The PC deleted what had arrived.
     case cancelledOnPC
+    /// The PC unpaired this phone (or the phone unpaired it): its sends are refused until it pairs again (403).
+    case unpairedByPC
+    /// Pairing a PC that already lists this phone (409 alreadyPaired).
+    case alreadyPaired(alias: String)
 
     var errorDescription: String? {
         switch self {
@@ -107,6 +113,10 @@ enum LSError: LocalizedError {
         case .wrongCode(let left):
             return left.map { "Wrong code. \($0) \($0 == 1 ? "try" : "tries") left." } ?? "Wrong code."
         case .pairingLocked: return "Too many wrong codes. Choose Pair iPhone on the PC again."
+        case .unpairedByPC:
+            return "This PC unpaired this iPhone. Open Grasp to pair again."
+        case .alreadyPaired(let alias):
+            return "Already paired with \(alias)."
         case .cancelledOnPC:
             return "Cancelled on the PC. Nothing was kept."
         case .notPairedByCode:
@@ -122,7 +132,10 @@ enum LSError: LocalizedError {
         case 401:
             let left = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["attemptsLeft"] as? Int
             return .wrongCode(attemptsLeft: left)
-        case 409: return .pairingNotOpen
+        case 409:
+            let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+            if json?["alreadyPaired"] as? Bool == true { return .alreadyPaired(alias: json?["alias"] as? String ?? "this PC") }
+            return .pairingNotOpen
         case 429: return .pairingLocked
         default: return .badStatus(status, String(data: body, encoding: .utf8) ?? "")
         }
@@ -131,7 +144,9 @@ enum LSError: LocalizedError {
     static func from(status: Int, body: String) -> LSError {
         switch status {
         case 401: return .pinRequired
-        case 403: return .rejected
+        case 403:
+            let json = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+            return json?["unpaired"] as? Bool == true ? .unpairedByPC : .rejected
         case 409: return .busy
         case 410: return .cancelledOnPC
         case 422: return .checksumMismatch

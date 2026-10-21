@@ -74,6 +74,12 @@ impl Ui for TauriUi {
             UiEvent::Paired { .. } | UiEvent::Queued { .. } | UiEvent::OutboxDelivered { .. } => {
                 let _ = self.app.emit_to("menu", "menu-refresh", ());
             }
+            UiEvent::Unpaired { outbox_cleared, .. } => {
+                let _ = self.app.emit_to("menu", "menu-refresh", ());
+                if *outbox_cleared {
+                    let _ = self.app.emit_to("toast", "outbox-cleared", ());
+                }
+            }
             _ => {}
         }
         let _ = self.app.emit("ui", &ev);

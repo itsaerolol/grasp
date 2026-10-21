@@ -8,8 +8,9 @@ export const PORT = 53317;
 export const API = '/api/localsend/v2';
 // Grasp for Windows extension, advertised as `grasp: N` in /info and /register. 1: code pairing.
 // 2: also the outbox (Windows -> iPhone: the phone pulls; see windows/core/src/outbox.rs).
+// 3: also durable pairing: GET /pair (is this phone paired), POST /unpair, removed phones refused.
 export const GRASP_API = '/api/grasp/v1';
-export const GRASP_LEVEL = 2;
+export const GRASP_LEVEL = 3;
 export const VERSION = '2.2';
 
 // LocalSend fingerprint: uppercase hex SHA-256 of cert DER (core/src/crypto/cert.rs).

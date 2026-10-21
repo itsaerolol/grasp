@@ -6,7 +6,8 @@
 //  - single session slot (409), upload must come from the same IP + valid token (403), sha256 check (422)
 //  - single text/plain file with preview = message -> 204 after accept, no upload
 //  - /cancel deletes every file the session saved (a cancel leaves nothing); its later uploads get 410
-//  - with --pair-code: acts like Grasp for Windows' code pairing (POST /api/grasp/v1/pair) and outbox
+//  - with --pair-code: acts like Grasp for Windows' code pairing (POST /api/grasp/v1/pair; GET it = paired?;
+//    POST /api/grasp/v1/unpair; an unpaired phone is refused until it pairs again; same phone = already paired) and outbox
 //    (GET /api/grasp/v1/outbox, GET .../outbox/file?id=, POST .../outbox/done?id=; paired phones only), `grasp: 2`
 // Usage: node tools/mock-receiver.mjs [--auto-accept|--reject] [--pin 1234] [--port 53317] [--inbox ./mock-inbox] [--throttle-kbps 500]
 //        [--pair-code 427] [--send PATH]... (queue files/folders for the phone) [--send-text TEXT]
@@ -31,6 +32,7 @@ const throttleKbps = Number(opt('--throttle-kbps', 0)); // slow uploads so Cance
 let pairing = opt('--pair-code', null) != null ? { code: opt('--pair-code'), attempts: 0 } : null;
 const graspMode = pairing != null;
 const paired = new Set();
+const removed = new Set(); // unpaired phones: refused (403 unpaired) until they pair again
 mkdirSync(inbox, { recursive: true });
 // Windows -> iPhone queue, same shape as windows/core/src/outbox.rs.
 const values = (n) => args.flatMap((a, i) => (a === n && args[i + 1] != null ? [args[i + 1]] : []));
@@ -86,6 +88,7 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
 
         case `POST ${API}/prepare-upload`: {
           if (pin && q.pin !== pin) return json(res, 401, { message: 'PIN required' });
+          if (clientFp && removed.has(clientFp)) return json(res, 403, { message: 'Unpaired: pair this iPhone with the PC again', unpaired: true });
           const body = await readJson(req);
           const files = Object.values(body.files || {});
           if (!files.length) return json(res, 400, { message: 'No files provided' });
@@ -139,6 +142,7 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
           if (!graspMode) return json(res, 404, { message: 'Not found' });
           const body = await readJson(req);
           if (!clientFp) return json(res, 400, { message: 'Client certificate required' });
+          if (paired.has(clientFp)) return json(res, 409, { message: 'Already paired', alreadyPaired: true, alias: info.alias });
           if (!pairing) return json(res, 409, { message: 'Pairing is not open on the PC' });
           if (String(body.code ?? '').trim() !== pairing.code) {
             pairing.attempts += 1;
@@ -146,10 +150,21 @@ const server = https.createServer({ key: me.key, cert: me.cert, requestCert: tru
             log(`PAIR wrong code from ${body.info?.alias}`);
             return json(res, 401, { message: 'Wrong code', attemptsLeft: 5 - pairing.attempts });
           }
-          pairing = null; paired.add(clientFp);
+          pairing = null; paired.add(clientFp); removed.delete(clientFp);
           log(`PAIRED ${body.info?.alias} ${clientFp}`);
           return json(res, 200, info);
         }
+
+        case `GET ${GRASP_API}/pair`:
+          if (!graspMode) return json(res, 404, { message: 'Not found' });
+          if (!clientFp) return json(res, 400, { message: 'Client certificate required' });
+          return json(res, 200, { paired: paired.has(clientFp), alias: info.alias });
+
+        case `POST ${GRASP_API}/unpair`:
+          if (!graspMode) return json(res, 404, { message: 'Not found' });
+          if (!clientFp) return json(res, 400, { message: 'Client certificate required' });
+          if (paired.delete(clientFp)) { removed.add(clientFp); log(`UNPAIRED by the phone ${clientFp.slice(0, 8)}…`); }
+          return json(res, 200);
 
         case `GET ${GRASP_API}/outbox`:
         case `GET ${GRASP_API}/outbox/file`:

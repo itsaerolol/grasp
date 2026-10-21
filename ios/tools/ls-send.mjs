@@ -6,6 +6,8 @@
 //   node tools/ls-send.mjs --host 192.168.1.20 --info            (print PC identity + cert fingerprint)
 //   node tools/ls-send.mjs --host 192.168.1.20 --pair 427        (Grasp for Windows: pair with the code it shows)
 //   node tools/ls-send.mjs --host 192.168.1.20 --fetch ./got     (Grasp for Windows: pull its outbox, like the iPhone app)
+//   node tools/ls-send.mjs --host 192.168.1.20 --pair-status     (Grasp for Windows: is this phone paired?)
+//   node tools/ls-send.mjs --host 192.168.1.20 --unpair          (Grasp for Windows: unpair, like the app's Unpair)
 // Options: --pin-fp <FP> (fail if server cert differs)  --pin <PIN>  --no-client-cert (prove mTLS is required)
 //          --cert <DIR> (use/create a different client identity there: "another phone")
 //          --cancel-after <N> (upload N files, cancel like the share sheet's Cancel, then try the next: expect 410)
@@ -141,11 +143,24 @@ async function main() {
   console.log(`my client fingerprint: ${me.fingerprint}`);
   console.log(`code pairing: ${reg.body?.grasp ? 'supported (Grasp for Windows)' : 'not supported'}`);
   console.log(`outbox (PC -> iPhone): ${reg.body?.grasp >= 2 ? 'supported' : 'not supported'}`);
+  console.log(`durable pairing: ${reg.body?.grasp >= 3 ? 'supported' : 'not supported'}`);
   if (flag('--info')) return;
+  if (flag('--pair-status')) {
+    const r = await request('GET', '/pair', { base: GRASP_API });
+    if (r.status !== 200) throw new Error(`pair status ${r.status}: ${r.body?.message ?? JSON.stringify(r.body)}`);
+    return console.log(`pair status: ${r.body.paired ? 'paired' : 'not paired'}`);
+  }
+  if (flag('--unpair')) {
+    const r = await request('POST', '/unpair', { base: GRASP_API });
+    if (r.status !== 200) throw new Error(`unpair ${r.status}: ${r.body?.message ?? JSON.stringify(r.body)}`);
+    return console.log('unpaired ✓');
+  }
   if (fetchDir != null) return fetchOutbox(fetchDir);
 
   if (pairCode != null) {
     const r = await request('POST', '/pair', { base: GRASP_API, json: { code: pairCode, info: myInfo } });
+    // Like the app: the PC still lists this phone, so the pairing stands (the app re-adopts it).
+    if (r.status === 409 && r.body?.alreadyPaired) return console.log(`already paired with ${r.body.alias} ✓`);
     if (r.status !== 200) throw new Error(`pair ${r.status}: ${PAIR_ERR[r.status] ?? JSON.stringify(r.body)}${r.body?.attemptsLeft != null ? ` (${r.body.attemptsLeft} left)` : ''}`);
     return console.log(`paired with ${r.body.alias} ✓`);
   }
@@ -168,6 +183,7 @@ async function main() {
     query: pin ? { pin } : {}, timeout: 600_000,
     json: { info: myInfo, files: Object.fromEntries(dtos.map((d) => [d.id, d])) } });
   if (prep.status === 204) return console.log('accepted (204, nothing to upload) ✓');
+  if (prep.status === 403 && prep.body?.unpaired) throw new Error('prepare-upload 403: Unpaired (pair this iPhone again)');
   if (prep.status !== 200) throw new Error(`prepare-upload ${prep.status}: ${ERR[prep.status] ?? JSON.stringify(prep.body)}`);
 
   const { sessionId, files: tokens } = prep.body;

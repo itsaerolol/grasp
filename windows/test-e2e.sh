@@ -49,7 +49,9 @@ check "auto-accept does not apply to an unpaired sender" "! send '$T/photo.jpg' 
 check "wrong code refused with attempts left" "! send --pair 111 && grep -q 'Wrong code (4 left)' '$T/send.log'"
 check "pairing needs a client cert" "! send --no-client-cert --pair 427 && grep -q 'Client certificate required' '$T/send.log'"
 check "right code pairs" "send --pair 427 && grep -q 'paired with' '$T/send.log' && grep -q 'PAIRED Grasp CLI' '$T/recv.log'"
-check "code is single-use" "! send --pair 427 && grep -q 'not open' '$T/send.log'"
+check "code is single-use" "! send --cert '$T/other-phone' --pair 427 && grep -q 'not open' '$T/send.log'"
+check "same phone again -> already paired, no attempt used" "send --pair 427 && grep -q 'already paired with' '$T/send.log'"
+check "pair status: paired (another phone: not)" "send --pair-status && grep -q 'pair status: paired' '$T/send.log' && send --cert '$T/other-phone' --pair-status && grep -q 'not paired' '$T/send.log'"
 check "paired sender is auto-accepted" "send '$T/photo.jpg' && grep -q 'AUTO-ACCEPTED' '$T/recv.log' && cmp -s '$T/photo.jpg' '$T/inbox/photo.jpg'"
 check "paired text message is auto-accepted" "send --text 'https://whiteframe.cc' && grep -q 'MESSAGE.*whiteframe' '$T/recv.log'"
 check "same sender without its cert is not trusted" "! send --no-client-cert --text hi && grep -q 'Rejected' '$T/send.log'"
@@ -72,6 +74,17 @@ check "folder structure kept" "cmp -s '$T/out/Trip/day 2/clip.mov' '$T/got/Trip/
 check "deleted file is skipped and reported" "[ ! -e '$T/got/gone.pdf' ] && grep -q 'gone.pdf wasn.t sent to iPhone' '$T/recv.log'"
 check "delivered items leave the queue" "grep -q 'DELIVERED https://whiteframe.cc (0 left)' '$T/recv.log' && send --fetch '$T/got2' && grep -q 'nothing waiting' '$T/send.log'"
 check "queue survives a restart" "stop_recv; start_recv --reject --send-text later; stop_recv; start_recv --reject; send --fetch '$T/got3' && grep -q 'TEXT: later' '$T/send.log'"
+stop_recv
+
+# Durable pairing: unpairing on either side drops the phone everywhere. Here the phone unpairs (the PC side's
+# X runs the same unpair_phone; pairing.rs unit tests cover the rest). Auto-accept is on, so a refusal below
+# can only come from the unpair, never from a prompt.
+start_recv --auto-accept --auto-accept-paired --send-text 'for the phone'
+check "phone unpairs -> PC forgets it and clears the outbox" "send --unpair && grep -q 'UNPAIRED Grasp CLI by the phone' '$T/recv.log' && send --pair-status && grep -q 'not paired' '$T/send.log'"
+check "unpaired phone is refused with no prompt" "! send --text hi && grep -q 'Unpaired' '$T/send.log' && ! grep -q 'prepare-upload from' '$T/recv.log'"
+check "other senders still get the normal prompt" "send --cert '$T/other-phone' --text hello && grep -q 'MESSAGE.*hello' '$T/recv.log'"
+check "unpaired stays unpaired across a restart" "stop_recv; start_recv --auto-accept; ! send --text hi && grep -q 'Unpaired' '$T/send.log'"
+check "pairing again by code lifts it" "stop_recv; start_recv --reject --auto-accept-paired --pair-code 555; send --pair 555 && send --text back && grep -q 'AUTO-ACCEPTED' '$T/recv.log'"
 stop_recv
 
 echo "---- $PASS passed, $FAIL failed"

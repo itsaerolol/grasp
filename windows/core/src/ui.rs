@@ -37,6 +37,9 @@ pub enum UiEvent {
     /// A phone entered the right code.
     #[serde(rename_all = "camelCase")]
     Paired { device: crate::pairing::PairedDevice },
+    /// A phone was unpaired: on the PC (`by_phone` false) or by the phone itself (true).
+    #[serde(rename_all = "camelCase")]
+    Unpaired { device: crate::pairing::PairedDevice, by_phone: bool, outbox_cleared: bool },
     /// A LocalSend "message" the user has just ACCEPTED. The shell may now act on `text`.
     #[serde(rename_all = "camelCase")]
     Message { id: String, from: String, text: String },

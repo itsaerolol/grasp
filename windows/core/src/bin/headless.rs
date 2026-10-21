@@ -44,6 +44,9 @@ impl Ui for HeadlessUi {
             UiEvent::Failed { reason, .. } => println!("FAILED {reason}"),
             UiEvent::AutoAccepted { request } => println!("AUTO-ACCEPTED from paired {}", request.from),
             UiEvent::Paired { device } => println!("PAIRED {} {}", device.alias, device.fingerprint),
+            UiEvent::Unpaired { device, by_phone, .. } => {
+                println!("UNPAIRED {} {}", device.alias, if by_phone { "by the phone" } else { "on the PC" })
+            }
             UiEvent::Queued { count, waiting, .. } => println!("QUEUED {count} ({waiting} waiting)"),
             UiEvent::OutboxProgress { .. } => {}
             UiEvent::OutboxDelivered { name, remaining, .. } => println!("DELIVERED {name} ({remaining} left)"),

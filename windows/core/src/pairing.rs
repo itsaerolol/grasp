@@ -1,6 +1,10 @@
 //! Code pairing. The PC shows a 3-digit code for a short window; the phone sends it to
 //! `POST /api/grasp/v1/pair` over TLS with its client certificate. On a match the phone's cert
 //! fingerprint is remembered as paired. Paired devices are the only ones auto-accept applies to.
+//!
+//! Pairing is durable in both directions. Unpairing (on the PC, or the phone's `POST .../unpair`) moves the
+//! fingerprint to `removed.json`: a removed phone's transfers are refused outright (no prompt) until it pairs
+//! by code again, and the phone, which asks `GET .../pair` every few seconds, drops the PC on its side too.
 
 use std::{
     path::PathBuf,
@@ -39,6 +43,9 @@ pub enum PairOutcome {
     WrongCode { attempts_left: u32 },
     /// Too many wrong codes: the window is now closed.
     Locked,
+    /// This phone is already paired. The window stays open (it's meant for another phone) and no attempt is
+    /// counted; the phone re-adopts the pairing if it had lost it, or says "already paired" if it hadn't.
+    AlreadyPaired(PairedDevice),
 }
 
 struct Window {
@@ -51,13 +58,17 @@ pub struct Pairing {
     file: PathBuf,
     window: Mutex<Option<Window>>,
     paired: Mutex<Vec<PairedDevice>>,
+    /// Fingerprints unpaired on either side, refused until they pair by code again (`removed.json`).
+    removed: Mutex<Vec<String>>,
 }
 
 impl Pairing {
     /// `file` is the JSON list of paired devices (created on first pair).
     pub fn load(file: PathBuf) -> Self {
-        let paired = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Self { file, window: Mutex::new(None), paired: Mutex::new(paired) }
+        let read = |f: &PathBuf| std::fs::read(f).ok();
+        let paired = read(&file).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let removed = read(&file.with_file_name("removed.json")).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        Self { file, window: Mutex::new(None), paired: Mutex::new(paired), removed: Mutex::new(removed) }
     }
 
     /// Opens (or restarts) the pairing window with a fresh random code.
@@ -91,6 +102,9 @@ impl Pairing {
     }
 
     pub fn try_pair(&self, code: &str, fingerprint: &str, alias: &str, device_model: Option<String>) -> PairOutcome {
+        if let Some(d) = self.paired.lock().unwrap().iter().find(|d| d.fingerprint == fingerprint) {
+            return PairOutcome::AlreadyPaired(d.clone());
+        }
         let mut w = self.window.lock().unwrap();
         let Some(win) = w.as_mut().filter(|win| win.expires > Instant::now()) else {
             *w = None;
@@ -117,6 +131,10 @@ impl Pairing {
         list.retain(|d| d.fingerprint != device.fingerprint);
         list.push(device.clone());
         self.save(&list);
+        drop(list);
+        let mut removed = self.removed.lock().unwrap();
+        removed.retain(|f| f != fingerprint);
+        self.save_removed(&removed);
         PairOutcome::Paired(device)
     }
 
@@ -128,10 +146,30 @@ impl Pairing {
         self.paired.lock().unwrap().clone()
     }
 
-    pub fn unpair(&self, fingerprint: &str) {
+    /// Unpaired on a phone that was removed (on either side): its transfers are refused until it pairs again.
+    pub fn is_removed(&self, fingerprint: &str) -> bool {
+        self.removed.lock().unwrap().iter().any(|f| f == fingerprint)
+    }
+
+    /// Forgets a paired phone and remembers it as removed. Returns it, if it was paired.
+    pub fn unpair(&self, fingerprint: &str) -> Option<PairedDevice> {
         let mut list = self.paired.lock().unwrap();
+        let device = list.iter().find(|d| d.fingerprint == fingerprint).cloned();
         list.retain(|d| d.fingerprint != fingerprint);
         self.save(&list);
+        drop(list);
+        let mut removed = self.removed.lock().unwrap();
+        if !removed.iter().any(|f| f == fingerprint) {
+            removed.push(fingerprint.to_string());
+            self.save_removed(&removed);
+        }
+        device
+    }
+
+    fn save_removed(&self, removed: &[String]) {
+        if let Ok(json) = serde_json::to_vec_pretty(removed) {
+            let _ = std::fs::write(self.file.with_file_name("removed.json"), json);
+        }
     }
 
     fn save(&self, list: &[PairedDevice]) {
@@ -199,6 +237,32 @@ mod tests {
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(p.try_pair("555", "FP", "x", None), PairOutcome::NotOpen);
         assert!(p.current().is_none());
+    }
+
+    #[test]
+    fn same_phone_again_is_already_paired_and_the_window_stays_open() {
+        let (p, _) = fresh();
+        p.open_with("111".into(), CODE_LIFETIME);
+        assert!(matches!(p.try_pair("111", "FP1", "a", None), PairOutcome::Paired(_)));
+        p.open_with("222".into(), CODE_LIFETIME);
+        assert!(matches!(p.try_pair("222", "FP1", "a", None), PairOutcome::AlreadyPaired(_)));
+        assert!(p.current().is_some(), "the window is for another phone");
+        assert!(matches!(p.try_pair("222", "FP2", "b", None), PairOutcome::Paired(_)));
+    }
+
+    #[test]
+    fn unpaired_phones_stay_removed_until_they_pair_again() {
+        let (p, dir) = fresh();
+        p.open_with("333".into(), CODE_LIFETIME);
+        p.try_pair("333", "FP1", "a", None);
+        assert_eq!(p.unpair("FP1").map(|d| d.fingerprint), Some("FP1".into()));
+        assert!(!p.is_paired("FP1") && p.is_removed("FP1"));
+        let again = Pairing::load(dir.join("paired.json"));
+        assert!(again.is_removed("FP1"), "survives a restart");
+        again.open_with("444".into(), CODE_LIFETIME);
+        assert!(matches!(again.try_pair("444", "FP1", "a", None), PairOutcome::Paired(_)));
+        assert!(!again.is_removed("FP1") && !Pairing::load(dir.join("paired.json")).is_removed("FP1"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
