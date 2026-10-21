@@ -3,6 +3,8 @@
 
 mod chime;
 mod dragwatch;
+#[cfg(windows)]
+mod droptarget;
 mod menu;
 mod send;
 mod toast;
@@ -12,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use grasp_core::{cert, Config, Ui, UiEvent};
 use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    DragDropEvent, Emitter, Manager, WindowEvent,
+    Manager, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
 
@@ -124,23 +126,8 @@ fn main() {
             if let Some(paths) = send::paths_from_args(&std::env::args().collect::<Vec<_>>()) {
                 send::send_paths(app.handle(), paths);
             }
+            // Drops on the toast arrive through droptarget.rs (armed each time the toast is shown).
             dragwatch::start(app.handle().clone());
-            if let Some(toast) = app.get_webview_window("toast") {
-                let handle = app.handle().clone();
-                toast.on_window_event(move |e| {
-                    if let WindowEvent::DragDrop(drop) = e {
-                        match drop {
-                            DragDropEvent::Enter { .. } => { let _ = handle.emit_to("toast", "drop-hover", true); }
-                            DragDropEvent::Leave => { let _ = handle.emit_to("toast", "drop-hover", false); }
-                            DragDropEvent::Drop { paths, .. } => {
-                                let _ = handle.emit_to("toast", "dropped", ());
-                                send::send_paths(&handle, paths.clone());
-                            }
-                            _ => {}
-                        }
-                    }
-                });
-            }
 
             // The menu behaves like a popup: it goes away when you click elsewhere.
             if let Some(w) = app.get_webview_window("menu") {

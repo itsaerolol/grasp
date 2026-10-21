@@ -168,6 +168,13 @@ struct PairingView: View {
                     FindPCSection(model: model, showManual: $showManual)
                 }
             }
+            // Pull down: ping the paired PC now (updates the online/offline chip) and collect anything waiting.
+            .refreshable {
+                await model.refreshStatus()
+                if let me = model.me, let peer = model.paired {
+                    await inbox.pull(peer: peer, me: me) { kind, text in model.show(kind, text) }
+                }
+            }
             .navigationTitle("Grasp")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { menu } }
             .overlay(alignment: .bottom) { ToastView(toast: model.toast).padding(.bottom, 12) }

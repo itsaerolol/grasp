@@ -125,6 +125,9 @@ pub fn toast_show(app: AppHandle) {
         place(&w);
         let _ = w.show();
         let _ = w.set_always_on_top(true);
+        // WebView2 restores its own (refusing) drop target when the window is shown; put ours back.
+        #[cfg(windows)]
+        crate::droptarget::arm(&app);
     }
 }
 

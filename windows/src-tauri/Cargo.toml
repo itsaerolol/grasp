@@ -26,3 +26,6 @@ png = "0.17"
 [target.'cfg(windows)'.dependencies]
 # Drag detection (dragwatch.rs) and local time for screenshot names.
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }
+# The toast's own OLE drop target (droptarget.rs). Same version and features wry already builds.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-core = "0.62"   # needed by windows' #[implement] macro
